@@ -1,103 +1,109 @@
-# D 题双路线飞行工程
+# D 题单机双路线飞行工程
 
 ## 启动
-
-在工作区根目录构建并加载环境：
 
 ```bash
 colcon build --symlink-install
 source install/setup.bash
-```
 
-在 WSL 中构建时，工作区路径应避免中文和空格；Humble 的 ROSIDL 会把这类路径错误
-拆分。部署到香橙派的普通英文路径不受影响。
-
-分别启动本地飞行闭环和跨域桥：
-
-```bash
 ROS_DOMAIN_ID=1 ros2 launch my_launch flight.launch.py
-ROS_DOMAIN_ID=10 ros2 run domain_bridge_pkg domain_bridge --ros-args -p local_domain_id:=1
+ROS_DOMAIN_ID=10 ros2 run domain_bridge_pkg domain_bridge --ros-args \
+  -p local_domain_id:=1
 ```
 
-`flight.launch.py` 启动蓝海雷达、robot_state_publisher、Cartographer、STM32
-串口、面阵激光、高度来源选择器、PID 和任务控制器，不启动 RViz、占据栅格、相机或跨域桥。
+`flight.launch.py` 启动蓝海雷达、robot_state_publisher、Cartographer、STM32 串口、面阵激光、AprilTag 相机、高度选择器、PID 和任务控制器，不启动 RViz、占据栅格或相机预览。
 
-## 路线选择
+[`my_launch/config/flight.yaml`](my_launch/config/flight.yaml) 只保存 PID、视觉控制阈值、任务高度、航点和高度源选择，不保存硬件串口、相机或雷达驱动参数。蓝海雷达沿用原工程的驱动启动与参数文件；STM32、面阵激光、相机和跨域桥使用各自代码默认值。Cartographer 的 `.lua` 属于算法配置资源。
+
+若在 WSL 中构建，工作区路径不能包含中文或空格，否则 ROSIDL 可能错误拆分路径。部署到香橙派的纯英文路径不受影响。
+
+## 任务选择和航点
 
 在 Domain 10 发布：
 
 ```bash
-ROS_DOMAIN_ID=10 ros2 topic pub --once /route_choice std_msgs/msg/UInt8 "{data: 1}"
+ROS_DOMAIN_ID=10 ros2 topic pub --once /fly_choice std_msgs/msg/UInt8 "{data: 1}"
 ```
 
-- `1`：跟随小车 5 秒后发送 `0x11:[0x01]`，然后返航降落。
-- `2`：对准小车并以不低于 `-20 cm/s` 的速度缓降；低于 `45 cm` 时发送
-  `0x44:[0x01]`，5 秒后发送 `0x44:[0x00]`，随后原地升高并返航。
-- 其他值不会启动任务。
+- `1`：投放路线。发现 AprilTag 后视觉接管 XY，高度目标直接设为 `55 cm`。到达后，两轴误差连续 3 个新帧都不超过 `100 px`，才发送一次 `0x11:[0x01]`。
+- `2`：降落路线。发现 AprilTag 后视觉接管 XY，高度目标直接设为 `45 cm`。到达后发送一次 `0x44:[0x01]`；持续发送全零目标速度 5 秒，再发送一次 `0x44:[0x00]`。
+- 其他值忽略；任务执行中的重复选择不会重置任务。
 
-路线坐标及航点类型在
-[`activity_control_pkg/config/routes.yaml`](activity_control_pkg/config/routes.yaml)
-中配置。类型为 `1=NORMAL`、`2=SEARCH_DROP`、`3=SEARCH_LAND`。
-
-## 视觉预留接口
-
-本轮不启动视觉节点。后续视觉程序只需发布：
-
-- 话题：`/fine_data`
-- 类型：`std_msgs/msg/Int32MultiArray`
-- `data[0]`：机体前后方向像素误差
-- `data[1]`：机体左右方向像素误差
-
-数据超过 `0.2 s` 未更新时，PID 直接输出
-`/target_velocity=[0,0,0,0]`；抛投路线的连续 5 秒计时也会清零。
-`drone_camera_pkg` 仅保留源码，等待后续视觉整合。
-
-## 高度来源
-
-飞行高度统一由 `/height` 提供，PID、航点状态机和 Domain 10 状态上报都只订阅该话题。
-默认来源是面阵激光：`laser_array_pkg` 每帧取 64 束中的**最高有效距离**并发布
-`/height_laser_array`（`Int16`，厘米）；高度选择器将它转发到 `/height`。
-
-STM32 的 `0x05` 仅发布到 `/height_stm32`，默认不参与高度 PID。若需要临时切换，修改
-[`my_launch/config/height_source.yaml`](my_launch/config/height_source.yaml) 中的：
+航点在 `flight.yaml` 中写成：
 
 ```yaml
-height_source: laser_array  # 可改为 stm32
+route_drop_waypoints:
+  - "(0 0 150 0)"
+  - "(-32 65 150 0)"
+  - "(-32 182 150 0)"
+route_drop_normal_count: 1
 ```
 
-重启 `flight.launch.py` 后生效。激光节点默认关闭 UART 辅助融合，避免 STM32 高度影响面阵激光高度。
+四个数依次是 `(x_cm y_cm z_cm yaw_deg)`。前 `normal_count` 个是普通航点，剩余连续后缀均为搜索航点。四元组格式错误、包含非有限数值，或 `normal_count` 不小于航点总数时，控制器拒绝启动该任务。
 
-## 串口接口
+普通航段忽略 `/fine_data`。进入首个搜索航点时会清除旧视觉时间戳；搜索航点之间不等待，飞行途中收到新鲜 AprilTag 数据就立即裁剪剩余搜索航点并接管 XY。投放和降落分别把高度目标设为 `55 cm`、`45 cm`，视觉下降速度不低于 `-20 cm/s`。
 
-`uart_to_stm32` 默认使用 `/dev/ttyS6`、`921600`：
+每个 `/fine_data` 只作为一个新视觉帧参与计数，但该帧对应的控制速度最多可以沿用 `0.2 s`。超过 `0.2 s` 未更新时，三帧计数清零，`/target_velocity` 持续精确输出 `[0,0,0,0]`；收到新帧后恢复控制。
 
-- 接收 `0x05`：两个小端有符号字节，发布 `/height_stm32`，类型 `Int16`，单位厘米；默认不参与控制。
-- 发送 `0x31`：`/target_velocity` 的四个 `int16` 小端值。
-- `/serial_byte_command=[frame_id,value]`：发送长度为 1 的通用任务帧。
-- `/serial_byte_command_result=[frame_id,value,success]`：报告本地串口完整写入结果。
+投放完成后的返航顺序是 `(投放点x 投放点y 150 投放点yaw) → (0 0 150 0) → (0 0 0 0)`。降落停机 5 秒后发送起飞指令，发送成功时重新读取实时坐标，再执行 `(当前x 当前y 150 当前yaw) → (0 0 150 0) → (0 0 0 0)`。任务触发后不会再次接受视觉接管。
 
-任务状态机只在状态切换时请求一次 `0x11` 或 `0x44`。写入失败会进入
-`ERROR` 并保持全零速度；`0x44:[0x01]` 的停留计时从本地写入成功开始。
+## AprilTag 接口
+
+相机节点只识别 `DICT_APRILTAG_36h11`。内置默认值接受任意 ID；保存的调参文件可以改为只接受指定 ID。控制接口为：
+
+- `/fine_data`：`std_msgs/msg/Int32MultiArray`，`[机体前后像素误差, 机体左右像素误差]`
+- `/visual_takeover_active`：控制器是否已进入视觉接管
+- `/vision_fresh`：控制器当前使用的视觉帧是否新鲜
+
+色块识别、颜色选择和视觉模式切换接口均已删除。
+
+## AprilTag 独立调参
+
+调参时先停止 `flight.launch.py`，避免两个进程同时占用 `/dev/video0`，然后运行：
+
+```bash
+colcon build --symlink-install --packages-select apriltag_tuner_pkg
+source install/setup.bash
+ros2 run apriltag_tuner_pkg apriltag_tuner_node
+```
+
+调参节点不发布飞控话题。终端按键无需回车：`s` 保存、`r` 恢复默认值、`Space` 暂停/继续、`q` 或 `Esc` 退出。`s` 保存到 `~/.config/nezha/apriltag_detector.yaml`，正式 `drone_camera_node` 下次启动时自动读取；文件不存在或无效时会警告并使用内置参数。
+
+## 高度和串口
+
+PID、任务状态机与跨域状态统一使用 `/height`（`Int16`，厘米）。默认由面阵激光提供：`laser_array_pkg` 取 8×8 数据中的最高有效距离发布到 `/height_laser_array`，高度选择器再转发到 `/height`。
+
+STM32 的 `0x05` 只发布 `/height_stm32`，默认不参与控制。如需切换，在 `flight.yaml` 修改：
+
+```yaml
+height_source: "stm32"  # 默认是 "laser_array"
+```
+
+STM32 串口还负责：
+
+- `/target_velocity`：编码为 `0x31` 的四个小端 `int16`
+- `/serial_byte_command=[frame_id,value]`：发送单字节任务帧
+- `/serial_byte_command_result=[frame_id,value,success]`：报告本地串口写入结果
+
+任务帧仅在状态切换时请求一次。串口失败会进入 `ERROR` 并保持全零速度。
 
 ## 跨域状态
 
-Domain 10 的 `/fleet/device_status` 为 JSON 字符串，默认 10 Hz，包含：
+Domain 10 的 `/fleet/device_status` 是默认 10 Hz 的 JSON 字符串，包含：
 
-`device_id`、`x_cm`、`y_cm`、`z_cm`、`yaw_deg`、`route_choice`、
-`current_waypoint_index`、`mission_state`、`vision_active`、`vision_fresh`。
+`x_cm`、`y_cm`、`z_cm`、`yaw_deg`、`fly_choice`、`current_waypoint_index`、`mission_state`、`vision_active`、`vision_fresh`。
 
-只有 `/route_choice` 和上述状态被跨域桥转发；Domain 1 的控制话题不会暴露到
-Domain 10。
+桥只把 Domain 10 的 `/fly_choice` 转发到 Domain 1，并把上述状态送回 Domain 10；Domain 1 的控制话题不会跨域暴露。
 
-## 保留包
+## 自动测试
 
-- `activity_control_pkg`：双路线航点和任务状态机。
-- `pid_control_pkg`：普通航点、视觉 XY、缓降限制及全零安全输出。
-- `uart_to_stm32`、`serial_comm`：STM32 协议与串口。
-- `laser_array_pkg`：面阵激光高度（64 束最大有效距离）及下方障碍信息。
-- `bluesea2`、`my_carto_pkg`：雷达和 Cartographer 定位。
-- `domain_bridge_pkg`：Domain 1/10 轻量桥。
-- `my_launch`：Domain 1 总启动。
-- `drone_camera_pkg`：暂存，当前不启动。
+以下测试不连接真实雷达、相机或 STM32：
 
-已删除旧 Action 调度、多无人机订单及第二架无人机相关代码。
+```bash
+colcon test --packages-select \
+  activity_control_pkg pid_control_pkg drone_camera_pkg \
+  apriltag_tuner_pkg domain_bridge_pkg
+colcon test-result --verbose
+```
+
+它们覆盖航点配置拒绝、搜索段切换、投放三帧判定、投放/降落单次任务帧、实时坐标返航、视觉下降限速、持续全零速度、调参文件保存与加载、合成 AprilTag 检测，以及 Domain 1/10 双 Context 通信和状态 JSON 字段。

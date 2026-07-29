@@ -30,14 +30,13 @@ def durable_qos() -> QoSProfile:
 
 
 class DomainBridge(Node):
-    """Bridges route selection into Domain 1 and telemetry back to Domain 10."""
+    """Bridges flight selection into Domain 1 and telemetry back to Domain 10."""
 
     def __init__(self) -> None:
         super().__init__("domain_bridge")
         self._local_domain_id = int(
             self.declare_parameter("local_domain_id", 1).value
         )
-        self._device_id = str(self.declare_parameter("device_id", "drone1").value)
         self._map_frame = str(self.declare_parameter("map_frame", "map").value)
         self._robot_frame = str(
             self.declare_parameter("robot_frame", "laser_link").value
@@ -50,15 +49,15 @@ class DomainBridge(Node):
         self._height_cm: int | None = None
         self._mission_state = "WAITING_ROUTE"
         self._waypoint_index = -1
-        self._route_choice = 0
+        self._fly_choice = 0
         self._vision_active = False
         self._vision_fresh = False
 
         self._status_pub = self.create_publisher(String, "/fleet/device_status", 10)
-        self._route_sub = self.create_subscription(
+        self._fly_choice_sub = self.create_subscription(
             UInt8,
-            "/route_choice",
-            self._route_choice_from_domain_10,
+            "/fly_choice",
+            self._fly_choice_from_domain_10,
             10,
         )
 
@@ -67,36 +66,44 @@ class DomainBridge(Node):
         self._local_node = Node(
             "domain_bridge_local_endpoint", context=self._local_context
         )
-        self._local_route_pub = self._local_node.create_publisher(
-            UInt8, "/route_choice", 10
+        self._local_fly_choice_pub = self._local_node.create_publisher(
+            UInt8, "/fly_choice", 10
         )
-        self._local_node.create_subscription(
-            Int16, "/height", self._on_height, 10
-        )
-        self._local_node.create_subscription(
-            String, "/mission_state", self._on_mission_state, durable_qos()
-        )
-        self._local_node.create_subscription(
-            Int32,
-            "/current_waypoint_index",
-            self._on_waypoint_index,
-            durable_qos(),
-        )
-        self._local_node.create_subscription(
-            UInt8,
-            "/route_choice_status",
-            self._on_route_choice_status,
-            durable_qos(),
-        )
-        self._local_node.create_subscription(
-            Bool,
-            "/visual_takeover_active",
-            self._on_visual_active,
-            durable_qos(),
-        )
-        self._local_node.create_subscription(
-            Bool, "/vision_fresh", self._on_vision_fresh, durable_qos()
-        )
+        self._local_subscriptions = [
+            self._local_node.create_subscription(
+                Int16, "/height", self._on_height, 10
+            ),
+            self._local_node.create_subscription(
+                String,
+                "/mission_state",
+                self._on_mission_state,
+                durable_qos(),
+            ),
+            self._local_node.create_subscription(
+                Int32,
+                "/current_waypoint_index",
+                self._on_waypoint_index,
+                durable_qos(),
+            ),
+            self._local_node.create_subscription(
+                UInt8,
+                "/fly_choice_status",
+                self._on_fly_choice_status,
+                durable_qos(),
+            ),
+            self._local_node.create_subscription(
+                Bool,
+                "/visual_takeover_active",
+                self._on_visual_active,
+                durable_qos(),
+            ),
+            self._local_node.create_subscription(
+                Bool,
+                "/vision_fresh",
+                self._on_vision_fresh,
+                durable_qos(),
+            ),
+        ]
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(
             self._tf_buffer, self._local_node, spin_thread=False
@@ -112,8 +119,7 @@ class DomainBridge(Node):
             1.0 / status_frequency_hz, self._publish_status
         )
         self.get_logger().info(
-            f"bridge ready: current domain -> local DOMAIN={self._local_domain_id}; "
-            f"device_id={self._device_id}"
+            f"bridge ready: current domain -> local DOMAIN={self._local_domain_id}"
         )
 
     def _spin_local(self) -> None:
@@ -122,15 +128,15 @@ class DomainBridge(Node):
         except Exception as error:  # pragma: no cover - runtime protection
             self.get_logger().error(f"local-domain executor stopped: {error}")
 
-    def _route_choice_from_domain_10(self, msg: UInt8) -> None:
+    def _fly_choice_from_domain_10(self, msg: UInt8) -> None:
         if msg.data not in (1, 2):
             self.get_logger().warning(
-                f"ignoring invalid DOMAIN-10 /route_choice={msg.data}"
+                f"ignoring invalid DOMAIN-10 /fly_choice={msg.data}"
             )
             return
-        self._local_route_pub.publish(msg)
+        self._local_fly_choice_pub.publish(msg)
         self.get_logger().info(
-            f"bridged /route_choice={msg.data} to DOMAIN={self._local_domain_id}"
+            f"bridged /fly_choice={msg.data} to DOMAIN={self._local_domain_id}"
         )
 
     def _on_height(self, msg: Int16) -> None:
@@ -145,9 +151,9 @@ class DomainBridge(Node):
         with self._lock:
             self._waypoint_index = int(msg.data)
 
-    def _on_route_choice_status(self, msg: UInt8) -> None:
+    def _on_fly_choice_status(self, msg: UInt8) -> None:
         with self._lock:
-            self._route_choice = int(msg.data)
+            self._fly_choice = int(msg.data)
 
     def _on_visual_active(self, msg: Bool) -> None:
         with self._lock:
@@ -186,12 +192,11 @@ class DomainBridge(Node):
         x_cm, y_cm, yaw_deg = self._pose()
         with self._lock:
             payload = {
-                "device_id": self._device_id,
                 "x_cm": x_cm,
                 "y_cm": y_cm,
                 "z_cm": self._height_cm,
                 "yaw_deg": yaw_deg,
-                "route_choice": self._route_choice,
+                "fly_choice": self._fly_choice,
                 "current_waypoint_index": self._waypoint_index,
                 "mission_state": self._mission_state,
                 "vision_active": self._vision_active,

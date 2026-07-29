@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -20,8 +21,8 @@ namespace activity_control_pkg
 
 namespace
 {
-constexpr uint8_t kDropRouteChoice = 1;
-constexpr uint8_t kLandingRouteChoice = 2;
+constexpr uint8_t kDropFlyChoice = 1;
+constexpr uint8_t kLandingFlyChoice = 2;
 constexpr uint8_t kDropFrameId = 0x11;
 constexpr uint8_t kFlightSwitchFrameId = 0x44;
 constexpr uint8_t kEnabledValue = 0x01;
@@ -32,21 +33,22 @@ constexpr double kMonitorPeriodSec = 0.05;
 RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("route_target_publisher", options),
   current_index_(0),
-  route_choice_(0),
+  fly_choice_(0),
   state_(MissionState::WaitingRoute),
   returning_(false),
+  search_segment_active_(false),
   has_height_(false),
   current_height_cm_(0.0),
   has_fine_data_(false),
   fine_error_x_px_(0),
   fine_error_y_px_(0),
-  follow_timer_running_(false),
-  landed_x_cm_(0.0),
-  landed_y_cm_(0.0),
-  landed_yaw_deg_(0.0),
+  drop_aligned_frame_count_(0),
+  task_x_cm_(0.0),
+  task_y_cm_(0.0),
+  task_yaw_deg_(0.0),
   visual_active_(false),
   motion_hold_active_(true),
-  landing_descent_active_(false),
+  visual_descent_active_(false),
   last_vision_fresh_(false)
 {
   map_frame_ = declare_parameter<std::string>("map_frame", "map");
@@ -55,13 +57,27 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   height_tolerance_cm_ = declare_parameter<double>("height_tolerance_cm", 8.0);
   yaw_tolerance_deg_ = declare_parameter<double>("yaw_tolerance_deg", 8.0);
   fine_data_timeout_sec_ = declare_parameter<double>("fine_data_timeout_sec", 0.2);
-  follow_duration_sec_ = declare_parameter<double>("follow_duration_sec", 5.0);
+  drop_alignment_height_cm_ =
+    declare_parameter<double>("drop_alignment_height_cm", 55.0);
+  drop_alignment_tolerance_px_ =
+    declare_parameter<double>("drop_alignment_tolerance_px", 100.0);
+  drop_alignment_required_frames_ =
+    declare_parameter<int64_t>("drop_alignment_required_frames", 3);
   landed_hold_sec_ = declare_parameter<double>("landed_hold_sec", 5.0);
   landing_trigger_height_cm_ =
     declare_parameter<double>("landing_trigger_height_cm", 45.0);
   return_height_cm_ = declare_parameter<double>("return_height_cm", 150.0);
-  declareRouteParameters(kDropRouteChoice);
-  declareRouteParameters(kLandingRouteChoice);
+  if (fine_data_timeout_sec_ <= 0.0 ||
+    drop_alignment_height_cm_ < 0.0 ||
+    drop_alignment_tolerance_px_ < 0.0 ||
+    drop_alignment_required_frames_ <= 0)
+  {
+    throw std::invalid_argument(
+            "fine_data_timeout_sec must be positive; drop alignment parameters "
+            "must use non-negative height/tolerance and a positive frame count");
+  }
+  declareRouteParameters(kDropFlyChoice);
+  declareRouteParameters(kLandingFlyChoice);
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -73,22 +89,22 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
     create_publisher<std_msgs::msg::Bool>("/visual_takeover_active", durable_qos);
   motion_hold_pub_ =
     create_publisher<std_msgs::msg::Bool>("/motion_hold_active", durable_qos);
-  landing_descent_pub_ =
-    create_publisher<std_msgs::msg::Bool>("/landing_descent_active", durable_qos);
+  visual_descent_pub_ =
+    create_publisher<std_msgs::msg::Bool>("/visual_descent_active", durable_qos);
   vision_fresh_pub_ =
     create_publisher<std_msgs::msg::Bool>("/vision_fresh", durable_qos);
   mission_state_pub_ =
     create_publisher<std_msgs::msg::String>("/mission_state", durable_qos);
   waypoint_index_pub_ =
     create_publisher<std_msgs::msg::Int32>("/current_waypoint_index", durable_qos);
-  route_choice_status_pub_ =
-    create_publisher<std_msgs::msg::UInt8>("/route_choice_status", durable_qos);
+  fly_choice_status_pub_ =
+    create_publisher<std_msgs::msg::UInt8>("/fly_choice_status", durable_qos);
   serial_command_pub_ =
     create_publisher<std_msgs::msg::UInt8MultiArray>("/serial_byte_command", 10);
 
-  route_choice_sub_ = create_subscription<std_msgs::msg::UInt8>(
-    "/route_choice", rclcpp::QoS(10).reliable(),
-    std::bind(&RouteTargetPublisherNode::routeChoiceCallback, this, std::placeholders::_1));
+  fly_choice_sub_ = create_subscription<std_msgs::msg::UInt8>(
+    "/fly_choice", rclcpp::QoS(10).reliable(),
+    std::bind(&RouteTargetPublisherNode::flyChoiceCallback, this, std::placeholders::_1));
   height_sub_ = create_subscription<std_msgs::msg::Int16>(
     "/height", 10,
     std::bind(&RouteTargetPublisherNode::heightCallback, this, std::placeholders::_1));
@@ -103,14 +119,13 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
       this, std::placeholders::_1));
 
   last_fine_data_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
-  follow_start_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
   state_start_time_ = now();
   monitor_timer_ = create_wall_timer(
     std::chrono::duration<double>(kMonitorPeriodSec),
     std::bind(&RouteTargetPublisherNode::monitorTimerCallback, this));
 
   publishVisualState(false);
-  publishLandingDescentState(false);
+  publishVisualDescentState(false);
   publishMotionHold(true);
   publishVisionFresh(false);
   publishMissionState();
@@ -118,95 +133,67 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
 
   RCLCPP_INFO(
     get_logger(),
-    "D-task route controller ready. Waiting for /route_choice: 1=drop, 2=landing.");
+    "D-task route controller ready. Waiting for /fly_choice: 1=drop, 2=landing.");
   RCLCPP_INFO(
     get_logger(),
-    "fine_data_timeout=%.3fs follow=%.1fs landing_trigger=%.1fcm landed_hold=%.1fs",
-    fine_data_timeout_sec_, follow_duration_sec_,
+    "fine_data_timeout=%.3fs drop_alignment=%.1fcm/%.1fpx/%ldframes "
+    "landing_trigger=%.1fcm landed_hold=%.1fs",
+    fine_data_timeout_sec_, drop_alignment_height_cm_,
+    drop_alignment_tolerance_px_, drop_alignment_required_frames_,
     landing_trigger_height_cm_, landed_hold_sec_);
 }
 
-void RouteTargetPublisherNode::declareRouteParameters(uint8_t route_choice)
+void RouteTargetPublisherNode::declareRouteParameters(uint8_t fly_choice)
 {
-  const std::string prefix = "route_" + std::to_string(route_choice) + "_";
-  declare_parameter<std::vector<double>>(
-    prefix + "x_cm", std::vector<double>{});
-  declare_parameter<std::vector<double>>(
-    prefix + "y_cm", std::vector<double>{});
-  declare_parameter<std::vector<double>>(
-    prefix + "z_cm", std::vector<double>{});
-  declare_parameter<std::vector<double>>(
-    prefix + "yaw_deg", std::vector<double>{});
-  declare_parameter<std::vector<int64_t>>(
-    prefix + "type", std::vector<int64_t>{});
+  const std::string prefix =
+    fly_choice == kDropFlyChoice ? "route_drop_" : "route_land_";
+  declare_parameter<std::vector<std::string>>(
+    prefix + "waypoints", std::vector<std::string>{});
+  declare_parameter<int64_t>(prefix + "normal_count", 0);
 }
 
-std::vector<Target> RouteTargetPublisherNode::loadConfiguredRoute(uint8_t route_choice) const
+std::vector<Target> RouteTargetPublisherNode::loadConfiguredRoute(uint8_t fly_choice) const
 {
-  const std::string prefix = "route_" + std::to_string(route_choice) + "_";
-  const auto x = get_parameter(prefix + "x_cm").as_double_array();
-  const auto y = get_parameter(prefix + "y_cm").as_double_array();
-  const auto z = get_parameter(prefix + "z_cm").as_double_array();
-  const auto yaw = get_parameter(prefix + "yaw_deg").as_double_array();
-  const auto type = get_parameter(prefix + "type").as_integer_array();
-
-  if (x.size() != y.size() || x.size() != z.size() ||
-    x.size() != yaw.size() || x.size() != type.size())
+  const std::string prefix =
+    fly_choice == kDropFlyChoice ? "route_drop_" : "route_land_";
+  const auto waypoint_texts = get_parameter(prefix + "waypoints").as_string_array();
+  const int64_t normal_count = get_parameter(prefix + "normal_count").as_int();
+  if (waypoint_texts.empty()) {
+    throw std::runtime_error("selected route is empty");
+  }
+  if (normal_count < 0 ||
+    static_cast<std::size_t>(normal_count) >= waypoint_texts.size())
   {
-    throw std::runtime_error("route parameter arrays must have equal lengths");
+    throw std::runtime_error(
+            prefix + "normal_count must be >= 0 and smaller than waypoint count");
   }
 
+  const WaypointType search_type =
+    fly_choice == kDropFlyChoice ?
+    WaypointType::SearchDrop : WaypointType::SearchLand;
   std::vector<Target> route;
-  route.reserve(x.size());
-  for (std::size_t index = 0; index < x.size(); ++index) {
-    route.push_back(Target{
-      x[index], y[index], z[index], yaw[index],
-      static_cast<WaypointType>(type[index])});
+  route.reserve(waypoint_texts.size());
+  for (std::size_t index = 0; index < waypoint_texts.size(); ++index) {
+    const WaypointType type =
+      index < static_cast<std::size_t>(normal_count) ?
+      WaypointType::Normal : search_type;
+    route.push_back(parseWaypoint(waypoint_texts[index], type));
   }
-  validateRoute(route, route_choice);
   return route;
 }
 
-void RouteTargetPublisherNode::validateRoute(
-  const std::vector<Target> & route, uint8_t route_choice) const
-{
-  if (route.empty()) {
-    throw std::runtime_error("selected route is empty");
-  }
-  const WaypointType expected_search =
-    route_choice == kDropRouteChoice ? WaypointType::SearchDrop : WaypointType::SearchLand;
-  bool has_expected_search = false;
-  for (const auto & target : route) {
-    if (target.type != WaypointType::Normal &&
-      target.type != WaypointType::SearchDrop &&
-      target.type != WaypointType::SearchLand)
-    {
-      throw std::runtime_error("waypoint type must be 1, 2, or 3");
-    }
-    if (target.type == expected_search) {
-      has_expected_search = true;
-    }
-    if (target.type != WaypointType::Normal && target.type != expected_search) {
-      throw std::runtime_error("route contains a search waypoint for the other mission");
-    }
-  }
-  if (!has_expected_search) {
-    throw std::runtime_error("selected route has no task search waypoint");
-  }
-}
-
-void RouteTargetPublisherNode::routeChoiceCallback(
+void RouteTargetPublisherNode::flyChoiceCallback(
   const std_msgs::msg::UInt8::SharedPtr msg)
 {
-  if (msg->data != kDropRouteChoice && msg->data != kLandingRouteChoice) {
+  if (msg->data != kDropFlyChoice && msg->data != kLandingFlyChoice) {
     RCLCPP_WARN(
-      get_logger(), "Ignoring invalid /route_choice=%u; valid values are 1 and 2.",
+      get_logger(), "Ignoring invalid /fly_choice=%u; valid values are 1 and 2.",
       static_cast<unsigned>(msg->data));
     return;
   }
   if (state_ != MissionState::WaitingRoute && state_ != MissionState::Completed) {
     RCLCPP_WARN(
-      get_logger(), "Ignoring /route_choice=%u because a mission is already active.",
+      get_logger(), "Ignoring /fly_choice=%u because a mission is already active.",
       static_cast<unsigned>(msg->data));
     return;
   }
@@ -219,27 +206,29 @@ void RouteTargetPublisherNode::routeChoiceCallback(
   }
 }
 
-void RouteTargetPublisherNode::loadRoute(uint8_t route_choice)
+void RouteTargetPublisherNode::loadRoute(uint8_t fly_choice)
 {
-  targets_ = loadConfiguredRoute(route_choice);
+  targets_ = loadConfiguredRoute(fly_choice);
   current_index_ = 0;
-  route_choice_ = route_choice;
+  fly_choice_ = fly_choice;
   returning_ = false;
+  search_segment_active_ = false;
   has_fine_data_ = false;
-  follow_timer_running_ = false;
+  resetDropAlignmentCount();
   publishVisualState(false);
-  publishLandingDescentState(false);
-  publishMotionHold(false);
+  publishVisualDescentState(false);
   setState(MissionState::Navigating);
 
-  std_msgs::msg::UInt8 route_msg;
-  route_msg.data = route_choice_;
-  route_choice_status_pub_->publish(route_msg);
+  std_msgs::msg::UInt8 choice_msg;
+  choice_msg.data = fly_choice_;
+  fly_choice_status_pub_->publish(choice_msg);
+  updateSearchSegmentState();
   publishCurrentTarget();
   publishCurrentWaypointIndex();
+  publishMotionHold(false);
   RCLCPP_INFO(
-    get_logger(), "Loaded route %u with %zu waypoints.",
-    static_cast<unsigned>(route_choice_), targets_.size());
+    get_logger(), "Loaded fly choice %u with %zu waypoints.",
+    static_cast<unsigned>(fly_choice_), targets_.size());
 }
 
 void RouteTargetPublisherNode::heightCallback(const std_msgs::msg::Int16::SharedPtr msg)
@@ -257,10 +246,38 @@ void RouteTargetPublisherNode::fineDataCallback(
       "/fine_data requires [forward_error_px, lateral_error_px].");
     return;
   }
+  if (!search_segment_active_ && !visual_active_) {
+    return;
+  }
+  const rclcpp::Time received_time = now();
+  const bool frame_gap_timed_out =
+    has_fine_data_ &&
+    last_fine_data_time_.nanoseconds() != 0 &&
+    (received_time - last_fine_data_time_).seconds() > fine_data_timeout_sec_;
+  if (state_ == MissionState::FollowDrop && frame_gap_timed_out) {
+    resetDropAlignmentCount();
+  }
   fine_error_x_px_ = msg->data[0];
   fine_error_y_px_ = msg->data[1];
   has_fine_data_ = true;
-  last_fine_data_time_ = now();
+  last_fine_data_time_ = received_time;
+
+  // A frame is counted exactly once here, never once per control/monitor cycle.
+  if (state_ == MissionState::FollowDrop) {
+    if (has_height_ &&
+      current_height_cm_ <= drop_alignment_height_cm_ &&
+      isFineDataAligned())
+    {
+      drop_aligned_frame_count_ = std::min(
+        drop_aligned_frame_count_ + 1, drop_alignment_required_frames_);
+      RCLCPP_INFO(
+        get_logger(), "Drop alignment frame %ld/%ld: error=(%d,%d)px.",
+        drop_aligned_frame_count_, drop_alignment_required_frames_,
+        fine_error_x_px_, fine_error_y_px_);
+    } else {
+      resetDropAlignmentCount();
+    }
+  }
 }
 
 void RouteTargetPublisherNode::serialCommandResultCallback(
@@ -292,7 +309,7 @@ void RouteTargetPublisherNode::serialCommandResultCallback(
   if (!success) {
     publishMotionHold(true);
     publishVisualState(false);
-    publishLandingDescentState(false);
+    publishVisualDescentState(false);
     setState(MissionState::Error);
     RCLCPP_ERROR(
       get_logger(),
@@ -302,11 +319,13 @@ void RouteTargetPublisherNode::serialCommandResultCallback(
   }
 
   if (state_ == MissionState::DropCommandPending) {
-    startReturnRoute(false);
+    startReturnRoute(true);
   } else if (state_ == MissionState::LandingStopPending) {
     setState(MissionState::LandedHold);
   } else if (state_ == MissionState::TakeoffCommandPending) {
-    startReturnRoute(true);
+    // The car may have moved during the five-second hold. Keep publishing zero
+    // velocity until a fresh TF pose can be captured after takeoff is enabled.
+    setState(MissionState::WaitingTakeoffPose);
   }
 }
 
@@ -320,7 +339,8 @@ bool RouteTargetPublisherNode::hasFreshFineData(const rclcpp::Time & now_time) c
 void RouteTargetPublisherNode::monitorTimerCallback()
 {
   const rclcpp::Time now_time = now();
-  const bool vision_fresh = hasFreshFineData(now_time);
+  const bool vision_fresh =
+    (search_segment_active_ || visual_active_) && hasFreshFineData(now_time);
   if (vision_fresh != last_vision_fresh_) {
     publishVisionFresh(vision_fresh);
     last_vision_fresh_ = vision_fresh;
@@ -357,21 +377,39 @@ void RouteTargetPublisherNode::monitorTimerCallback()
     return;
   }
 
+  if (state_ == MissionState::WaitingTakeoffPose) {
+    task_x_cm_ = x_cm;
+    task_y_cm_ = y_cm;
+    task_yaw_deg_ = yaw_deg;
+    startReturnRoute(true);
+    return;
+  }
+
   if (state_ == MissionState::FollowDrop) {
     if (!vision_fresh) {
+      resetDropAlignmentCount();
       publishMotionHold(true);
-      follow_timer_running_ = false;
       return;
     }
-    publishMotionHold(false);
-    if (!follow_timer_running_) {
-      follow_start_time_ = now_time;
-      follow_timer_running_ = true;
-      RCLCPP_INFO(get_logger(), "Fresh car tracking acquired; starting continuous 5s timer.");
+    if (!has_height_ || current_height_cm_ > drop_alignment_height_cm_) {
+      resetDropAlignmentCount();
     }
-    if ((now_time - follow_start_time_).seconds() >= follow_duration_sec_) {
+    publishMotionHold(false);
+    if (has_height_ &&
+      current_height_cm_ <= drop_alignment_height_cm_ &&
+      drop_aligned_frame_count_ >= drop_alignment_required_frames_)
+    {
+      task_x_cm_ = x_cm;
+      task_y_cm_ = y_cm;
+      task_yaw_deg_ = yaw_deg;
+      search_segment_active_ = false;
+      has_fine_data_ = false;
+      resetDropAlignmentCount();
       publishMotionHold(true);
       publishVisualState(false);
+      publishVisualDescentState(false);
+      publishVisionFresh(false);
+      last_vision_fresh_ = false;
       setState(MissionState::DropCommandPending);
       publishSerialByteCommand(kDropFrameId, kEnabledValue);
     }
@@ -384,13 +422,14 @@ void RouteTargetPublisherNode::monitorTimerCallback()
       return;
     }
     publishMotionHold(false);
-    if (has_height_ && current_height_cm_ < landing_trigger_height_cm_) {
-      landed_x_cm_ = x_cm;
-      landed_y_cm_ = y_cm;
-      landed_yaw_deg_ = yaw_deg;
+    if (has_height_ && current_height_cm_ <= landing_trigger_height_cm_) {
+      search_segment_active_ = false;
+      has_fine_data_ = false;
       publishMotionHold(true);
       publishVisualState(false);
-      publishLandingDescentState(false);
+      publishVisualDescentState(false);
+      publishVisionFresh(false);
+      last_vision_fresh_ = false;
       setState(MissionState::LandingStopPending);
       publishSerialByteCommand(kFlightSwitchFrameId, kEnabledValue);
     }
@@ -409,8 +448,8 @@ void RouteTargetPublisherNode::monitorTimerCallback()
   const Target & target = targets_[current_index_];
   const bool is_search =
     target.type == WaypointType::SearchDrop || target.type == WaypointType::SearchLand;
-  if (is_search && vision_fresh && !returning_) {
-    beginSearchTask(target, now_time);
+  if (is_search && search_segment_active_ && vision_fresh && !returning_) {
+    beginSearchTask(target);
     return;
   }
 
@@ -423,30 +462,57 @@ void RouteTargetPublisherNode::monitorTimerCallback()
   }
 }
 
-void RouteTargetPublisherNode::beginSearchTask(
-  const Target & target, const rclcpp::Time & now_time)
+void RouteTargetPublisherNode::beginSearchTask(const Target & target)
 {
   targets_.resize(current_index_ + 1);
-  follow_timer_running_ = false;
-  publishVisualState(true);
-  publishMotionHold(false);
+  search_segment_active_ = false;
+  resetDropAlignmentCount();
 
-  Target visual_hold = target;
+  Target visual_target = target;
   if (target.type == WaypointType::SearchLand) {
-    visual_hold.z_cm = 0.0;
-    publishLandingDescentState(true);
+    visual_target.z_cm = landing_trigger_height_cm_;
     setState(MissionState::FollowLand);
   } else {
-    publishLandingDescentState(false);
-    follow_start_time_ = now_time;
-    follow_timer_running_ = true;
+    visual_target.z_cm = drop_alignment_height_cm_;
     setState(MissionState::FollowDrop);
   }
-  publishTarget(visual_hold);
+  publishTarget(visual_target);
+  publishVisualState(true);
+  publishVisualDescentState(true);
+  publishMotionHold(false);
   RCLCPP_INFO(
     get_logger(),
-    "Car detected at search waypoint %zu; removed later search waypoints and entered %s.",
-    current_index_, stateName(state_));
+    "AprilTag detected on search leg %zu; removed later search waypoints and entered %s.",
+    current_index_ + 1, stateName(state_));
+}
+
+void RouteTargetPublisherNode::updateSearchSegmentState()
+{
+  const bool should_search =
+    !returning_ &&
+    current_index_ < targets_.size() &&
+    (targets_[current_index_].type == WaypointType::SearchDrop ||
+    targets_[current_index_].type == WaypointType::SearchLand);
+
+  if (should_search && !search_segment_active_) {
+    search_segment_active_ = true;
+    has_fine_data_ = false;
+    resetDropAlignmentCount();
+    last_fine_data_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
+    last_vision_fresh_ = false;
+    publishVisionFresh(false);
+    RCLCPP_INFO(
+      get_logger(),
+      "Entered continuous AprilTag search segment at waypoint %zu; old vision data cleared.",
+      current_index_ + 1);
+  } else if (!should_search && search_segment_active_) {
+    search_segment_active_ = false;
+    has_fine_data_ = false;
+    resetDropAlignmentCount();
+    last_fine_data_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
+    last_vision_fresh_ = false;
+    publishVisionFresh(false);
+  }
 }
 
 void RouteTargetPublisherNode::startReturnRoute(bool takeoff_from_car)
@@ -454,7 +520,7 @@ void RouteTargetPublisherNode::startReturnRoute(bool takeoff_from_car)
   targets_.clear();
   if (takeoff_from_car) {
     targets_.push_back(Target{
-      landed_x_cm_, landed_y_cm_, return_height_cm_, landed_yaw_deg_,
+      task_x_cm_, task_y_cm_, return_height_cm_, task_yaw_deg_,
       WaypointType::Normal});
   }
   targets_.push_back(Target{
@@ -462,13 +528,18 @@ void RouteTargetPublisherNode::startReturnRoute(bool takeoff_from_car)
   targets_.push_back(Target{0.0, 0.0, 0.0, 0.0, WaypointType::Normal});
   current_index_ = 0;
   returning_ = true;
-  follow_timer_running_ = false;
+  search_segment_active_ = false;
+  has_fine_data_ = false;
+  resetDropAlignmentCount();
+  last_fine_data_time_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
+  last_vision_fresh_ = false;
   publishVisualState(false);
-  publishLandingDescentState(false);
-  publishMotionHold(false);
+  publishVisualDescentState(false);
+  publishVisionFresh(false);
   setState(MissionState::Returning);
   publishCurrentWaypointIndex();
   publishCurrentTarget();
+  publishMotionHold(false);
 }
 
 void RouteTargetPublisherNode::advanceTarget()
@@ -483,14 +554,20 @@ void RouteTargetPublisherNode::advanceTarget()
     }
     return;
   }
+  updateSearchSegmentState();
   publishCurrentTarget();
 }
 
 void RouteTargetPublisherNode::completeMission()
 {
+  search_segment_active_ = false;
+  has_fine_data_ = false;
+  resetDropAlignmentCount();
+  last_vision_fresh_ = false;
   publishVisualState(false);
-  publishLandingDescentState(false);
+  publishVisualDescentState(false);
   publishMotionHold(true);
+  publishVisionFresh(false);
   setState(MissionState::Completed);
   RCLCPP_INFO(get_logger(), "Mission complete; target velocity is held at zero.");
 }
@@ -534,6 +611,24 @@ bool RouteTargetPublisherNode::isCurrentTargetReached(
          yaw_error <= yaw_tolerance_deg_;
 }
 
+bool RouteTargetPublisherNode::isFineDataAligned() const
+{
+  return std::fabs(static_cast<double>(fine_error_x_px_)) <=
+         drop_alignment_tolerance_px_ &&
+         std::fabs(static_cast<double>(fine_error_y_px_)) <=
+         drop_alignment_tolerance_px_;
+}
+
+void RouteTargetPublisherNode::resetDropAlignmentCount()
+{
+  if (drop_aligned_frame_count_ > 0) {
+    RCLCPP_INFO(
+      get_logger(), "Drop alignment count reset from %ld.",
+      drop_aligned_frame_count_);
+  }
+  drop_aligned_frame_count_ = 0;
+}
+
 void RouteTargetPublisherNode::publishCurrentTarget()
 {
   if (current_index_ < targets_.size()) {
@@ -575,12 +670,12 @@ void RouteTargetPublisherNode::publishMotionHold(bool active)
   motion_hold_pub_->publish(msg);
 }
 
-void RouteTargetPublisherNode::publishLandingDescentState(bool active)
+void RouteTargetPublisherNode::publishVisualDescentState(bool active)
 {
-  landing_descent_active_ = active;
+  visual_descent_active_ = active;
   std_msgs::msg::Bool msg;
   msg.data = active;
-  landing_descent_pub_->publish(msg);
+  visual_descent_pub_->publish(msg);
 }
 
 void RouteTargetPublisherNode::publishVisionFresh(bool fresh)
@@ -638,6 +733,7 @@ const char * RouteTargetPublisherNode::stateName(MissionState state)
     case MissionState::LandingStopPending: return "LANDING_STOP_PENDING";
     case MissionState::LandedHold: return "LANDED_HOLD";
     case MissionState::TakeoffCommandPending: return "TAKEOFF_COMMAND_PENDING";
+    case MissionState::WaitingTakeoffPose: return "WAITING_TAKEOFF_POSE";
     case MissionState::Returning: return "RETURNING";
     case MissionState::Completed: return "COMPLETED";
     case MissionState::Error: return "ERROR";
@@ -648,6 +744,36 @@ const char * RouteTargetPublisherNode::stateName(MissionState state)
 double RouteTargetPublisherNode::normalizeAngleDeg(double angle_deg)
 {
   return angles::to_degrees(angles::normalize_angle(angles::from_degrees(angle_deg)));
+}
+
+Target RouteTargetPublisherNode::parseWaypoint(
+  const std::string & text, WaypointType waypoint_type)
+{
+  if (text.size() < 2 || text.front() != '(' || text.back() != ')') {
+    throw std::runtime_error(
+            "waypoint must use '(x_cm y_cm z_cm yaw_deg)' format: " + text);
+  }
+
+  std::istringstream stream(text.substr(1, text.size() - 2));
+  Target target;
+  target.type = waypoint_type;
+  if (!(stream >> target.x_cm >> target.y_cm >> target.z_cm >> target.yaw_deg)) {
+    throw std::runtime_error(
+            "waypoint must contain exactly four numbers: " + text);
+  }
+  std::string trailing;
+  if (stream >> trailing) {
+    throw std::runtime_error(
+            "waypoint contains extra data after four numbers: " + text);
+  }
+  if (!std::isfinite(target.x_cm) ||
+    !std::isfinite(target.y_cm) ||
+    !std::isfinite(target.z_cm) ||
+    !std::isfinite(target.yaw_deg))
+  {
+    throw std::runtime_error("waypoint values must be finite: " + text);
+  }
+  return target;
 }
 
 }  // namespace activity_control_pkg

@@ -58,10 +58,6 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
-install(DIRECTORY launch config
-  DESTINATION share/${PROJECT_NAME}
-)
-
 ament_export_dependencies(
   rclcpp
   std_msgs
@@ -73,5 +69,20 @@ ament_export_dependencies(
 )
 ament_export_include_directories(include)
 ament_export_targets(export_route_target_publisher HAS_LIBRARY_TARGET)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_route_mission test/test_route_mission.cpp)
+  target_link_libraries(test_route_mission route_target_publisher)
+  ament_target_dependencies(test_route_mission
+    rclcpp
+    std_msgs
+    geometry_msgs
+    tf2_ros
+  )
+  set_tests_properties(test_route_mission PROPERTIES
+    ENVIRONMENT "ROS_DOMAIN_ID=81"
+  )
+endif()
 
 ament_package()

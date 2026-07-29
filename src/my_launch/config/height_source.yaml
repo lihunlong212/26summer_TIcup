@@ -1,8 +1,0 @@
-# Default: use the highest valid distance from the 64-beam laser array.
-# Change to stm32 only when STM32 0x05 height must drive the control loop.
-height_source_mux:
-  ros__parameters:
-    height_source: laser_array  # laser_array | stm32
-    laser_height_topic: /height_laser_array
-    stm32_height_topic: /height_stm32
-    output_height_topic: /height

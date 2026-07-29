@@ -55,37 +55,40 @@ private:
     LandingStopPending,
     LandedHold,
     TakeoffCommandPending,
+    WaitingTakeoffPose,
     Returning,
     Completed,
     Error,
   };
 
-  void routeChoiceCallback(const std_msgs::msg::UInt8::SharedPtr msg);
+  void flyChoiceCallback(const std_msgs::msg::UInt8::SharedPtr msg);
   void heightCallback(const std_msgs::msg::Int16::SharedPtr msg);
   void fineDataCallback(const std_msgs::msg::Int32MultiArray::SharedPtr msg);
   void serialCommandResultCallback(
     const std_msgs::msg::UInt8MultiArray::SharedPtr msg);
   void monitorTimerCallback();
 
-  std::vector<Target> loadConfiguredRoute(uint8_t route_choice) const;
-  void declareRouteParameters(uint8_t route_choice);
-  void validateRoute(const std::vector<Target> & route, uint8_t route_choice) const;
-  void loadRoute(uint8_t route_choice);
-  void beginSearchTask(const Target & target, const rclcpp::Time & now_time);
+  std::vector<Target> loadConfiguredRoute(uint8_t fly_choice) const;
+  void declareRouteParameters(uint8_t fly_choice);
+  void loadRoute(uint8_t fly_choice);
+  void beginSearchTask(const Target & target);
+  void updateSearchSegmentState();
   void startReturnRoute(bool takeoff_from_car);
   void advanceTarget();
   void completeMission();
+  void resetDropAlignmentCount();
 
   bool getCurrentPose(double & x_cm, double & y_cm, double & yaw_deg);
   bool isCurrentTargetReached(double x_cm, double y_cm, double yaw_deg) const;
   bool hasFreshFineData(const rclcpp::Time & now_time) const;
+  bool isFineDataAligned() const;
 
   void publishCurrentTarget();
   void publishTarget(const Target & target);
   void publishMissionState();
   void publishVisualState(bool active);
   void publishMotionHold(bool active);
-  void publishLandingDescentState(bool active);
+  void publishVisualDescentState(bool active);
   void publishVisionFresh(bool fresh);
   void publishCurrentWaypointIndex();
   void publishSerialByteCommand(uint8_t frame_id, uint8_t value);
@@ -93,18 +96,20 @@ private:
 
   static const char * stateName(MissionState state);
   static double normalizeAngleDeg(double angle_deg);
+  static Target parseWaypoint(
+    const std::string & text, WaypointType waypoint_type);
 
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr target_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr visual_takeover_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr motion_hold_pub_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr landing_descent_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr visual_descent_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr vision_fresh_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr mission_state_pub_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr waypoint_index_pub_;
-  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr route_choice_status_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr fly_choice_status_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8MultiArray>::SharedPtr serial_command_pub_;
 
-  rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr route_choice_sub_;
+  rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr fly_choice_sub_;
   rclcpp::Subscription<std_msgs::msg::Int16>::SharedPtr height_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr fine_data_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr
@@ -120,31 +125,33 @@ private:
   double height_tolerance_cm_;
   double yaw_tolerance_deg_;
   double fine_data_timeout_sec_;
-  double follow_duration_sec_;
+  double drop_alignment_height_cm_;
+  double drop_alignment_tolerance_px_;
+  int64_t drop_alignment_required_frames_;
   double landed_hold_sec_;
   double landing_trigger_height_cm_;
   double return_height_cm_;
 
   std::vector<Target> targets_;
   std::size_t current_index_;
-  uint8_t route_choice_;
+  uint8_t fly_choice_;
   MissionState state_;
   bool returning_;
+  bool search_segment_active_;
   bool has_height_;
   double current_height_cm_;
   bool has_fine_data_;
-  int fine_error_x_px_;
-  int fine_error_y_px_;
+  int32_t fine_error_x_px_;
+  int32_t fine_error_y_px_;
+  int64_t drop_aligned_frame_count_;
   rclcpp::Time last_fine_data_time_;
-  rclcpp::Time follow_start_time_;
-  bool follow_timer_running_;
   rclcpp::Time state_start_time_;
-  double landed_x_cm_;
-  double landed_y_cm_;
-  double landed_yaw_deg_;
+  double task_x_cm_;
+  double task_y_cm_;
+  double task_yaw_deg_;
   bool visual_active_;
   bool motion_hold_active_;
-  bool landing_descent_active_;
+  bool visual_descent_active_;
   bool last_vision_fresh_;
 };
 

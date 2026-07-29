@@ -15,10 +15,11 @@ setup(
         ("share/" + package_name, ["package.xml"]),
     ],
     install_requires=["setuptools"],
+    tests_require=["pytest"],
     zip_safe=True,
     maintainer="orangepi",
     maintainer_email="orangepi@todo.todo",
-    description="ROS Domain 10 to Domain 1 route and telemetry bridge.",
+    description="ROS Domain 10 to Domain 1 flight choice and telemetry bridge.",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [

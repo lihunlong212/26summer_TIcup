@@ -67,7 +67,7 @@ private:
   void heightCallback(const std_msgs::msg::Int16::SharedPtr msg);
   void visualTakeoverCallback(const std_msgs::msg::Bool::SharedPtr msg);
   void motionHoldCallback(const std_msgs::msg::Bool::SharedPtr msg);
-  void landingDescentCallback(const std_msgs::msg::Bool::SharedPtr msg);
+  void visualDescentCallback(const std_msgs::msg::Bool::SharedPtr msg);
   void fineDataCallback(const std_msgs::msg::Int32MultiArray::SharedPtr msg);
   void controlTimerCallback();
   void publishZeroVelocity();
@@ -87,7 +87,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Int16>::SharedPtr height_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr visual_takeover_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr motion_hold_sub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr landing_descent_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr visual_descent_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr fine_data_sub_;
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr target_velocity_pub_;
   rclcpp::TimerBase::SharedPtr control_timer_;
@@ -139,8 +139,8 @@ private:
 
   bool visual_takeover_active_;
   bool motion_hold_active_;
-  bool landing_descent_active_;
-  double landing_max_descent_velocity_cm_s_;
+  bool visual_descent_active_;
+  double visual_descent_max_velocity_cm_s_;
   bool has_visual_fine_data_;
   double visual_error_x_px_;
   double visual_error_y_px_;

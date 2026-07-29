@@ -145,7 +145,7 @@ PositionPIDController::PositionPIDController()
   visual_kd_y_(0.01),
   visual_pixel_deadzone_(5.0),
   visual_max_xy_velocity_(20.0),
-  visual_data_timeout_sec_(0.13),
+  visual_data_timeout_sec_(0.2),
   distance_xy_cm_(0.0),
   error_x_cm_(0.0),
   error_y_cm_(0.0),
@@ -153,8 +153,8 @@ PositionPIDController::PositionPIDController()
   error_z_cm_(0.0),
   visual_takeover_active_(false),
   motion_hold_active_(true),
-  landing_descent_active_(false),
-  landing_max_descent_velocity_cm_s_(20.0),
+  visual_descent_active_(false),
+  visual_descent_max_velocity_cm_s_(20.0),
   has_visual_fine_data_(false),
   visual_error_x_px_(0.0),
   visual_error_y_px_(0.0),
@@ -181,9 +181,9 @@ PositionPIDController::PositionPIDController()
   motion_hold_sub_ = create_subscription<std_msgs::msg::Bool>(
     "/motion_hold_active", takeover_qos,
     std::bind(&PositionPIDController::motionHoldCallback, this, std::placeholders::_1));
-  landing_descent_sub_ = create_subscription<std_msgs::msg::Bool>(
-    "/landing_descent_active", takeover_qos,
-    std::bind(&PositionPIDController::landingDescentCallback, this, std::placeholders::_1));
+  visual_descent_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "/visual_descent_active", takeover_qos,
+    std::bind(&PositionPIDController::visualDescentCallback, this, std::placeholders::_1));
   fine_data_sub_ = create_subscription<std_msgs::msg::Int32MultiArray>(
     "/fine_data", rclcpp::QoS(10),
     std::bind(&PositionPIDController::fineDataCallback, this, std::placeholders::_1));
@@ -252,17 +252,17 @@ void PositionPIDController::motionHoldCallback(const std_msgs::msg::Bool::Shared
     motion_hold_active_ ? "ACTIVE (forcing [0,0,0,0])" : "inactive");
 }
 
-void PositionPIDController::landingDescentCallback(
+void PositionPIDController::visualDescentCallback(
   const std_msgs::msg::Bool::SharedPtr msg)
 {
-  if (landing_descent_active_ == msg->data) {
+  if (visual_descent_active_ == msg->data) {
     return;
   }
-  landing_descent_active_ = msg->data;
+  visual_descent_active_ = msg->data;
   pid_z_.reset();
   RCLCPP_INFO(
-    get_logger(), "Landing descent limiter changed: %s",
-    landing_descent_active_ ? "active" : "inactive");
+    get_logger(), "Visual descent limiter changed: %s",
+    visual_descent_active_ ? "active" : "inactive");
 }
 
 void PositionPIDController::fineDataCallback(const std_msgs::msg::Int32MultiArray::SharedPtr msg)
@@ -383,9 +383,9 @@ std_msgs::msg::Float32MultiArray PositionPIDController::processPID(double dt)
     }
     vel_z_cm = 0.0;
   }
-  if (landing_descent_active_) {
+  if (visual_descent_active_) {
     vel_z_cm = std::clamp(
-      vel_z_cm, -std::fabs(landing_max_descent_velocity_cm_s_), 0.0);
+      vel_z_cm, -std::fabs(visual_descent_max_velocity_cm_s_), 0.0);
   }
 
   cmd.data[0] = static_cast<float>(vel_x_cm);
@@ -494,9 +494,9 @@ void PositionPIDController::loadParameters()
   visual_kd_y_ = declare_parameter<double>("visual_kd_y", 0.01);
   visual_pixel_deadzone_ = declare_parameter<double>("visual_pixel_deadzone", 5.0);
   visual_max_xy_velocity_ = declare_parameter<double>("visual_max_xy_velocity", 20.0);
-  visual_data_timeout_sec_ = declare_parameter<double>("visual_data_timeout_sec", 0.13);
-  landing_max_descent_velocity_cm_s_ =
-    declare_parameter<double>("landing_max_descent_velocity_cm_s", 20.0);
+  visual_data_timeout_sec_ = declare_parameter<double>("visual_data_timeout_sec", 0.2);
+  visual_descent_max_velocity_cm_s_ =
+    declare_parameter<double>("visual_descent_max_velocity_cm_s", 20.0);
 
   pid_yaw_.setPID(kp_yaw, ki_yaw, kd_yaw);
   pid_z_.setPID(kp_z, ki_z, kd_z);
@@ -526,13 +526,4 @@ void PositionPIDController::loadParameters()
     max_linear_vel_, max_angular_vel_, max_vertical_vel_);
 }
 
-}  // 命名空间 pid_control_pkg
-
-int main(int argc, char ** argv)
-{
-  rclcpp::init(argc, argv);
-  auto node = std::make_shared<pid_control_pkg::PositionPIDController>();
-  rclcpp::spin(node);
-  rclcpp::shutdown();
-  return 0;
-}
+}  // namespace pid_control_pkg

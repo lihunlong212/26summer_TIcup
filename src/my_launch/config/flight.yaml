@@ -1,0 +1,91 @@
+# D题飞行控制参数。雷达、相机和串口等硬件参数使用各自驱动的默认值，
+# 不要把硬件驱动参数放进这个文件。
+
+height_source_mux:
+  ros__parameters:
+    # 飞行高度来源：
+    # laser_array = 使用8x8面阵激光中的最大有效高度；
+    # stm32 = 使用STM32的0x05高度帧。
+    height_source: "laser_array"
+
+position_pid_controller:
+  ros__parameters:
+    # PID控制循环频率，单位Hz。
+    control_frequency: 50.0
+
+    # 普通航点XY、偏航和高度PID。
+    kp_xy: 0.8
+    ki_xy: 0.0
+    kd_xy: 0.2
+    kp_yaw: 1.0
+    ki_yaw: 0.0
+    kd_yaw: 0.2
+    kp_z: 1.0
+    ki_z: 0.0
+    kd_z: 0.2
+
+    max_linear_velocity: 25.0
+    max_angular_velocity: 25.0
+    max_vertical_velocity: 25.0
+
+    # AprilTag像素误差对应的视觉XY PID。
+    visual_kp_x: 0.08
+    visual_ki_x: 0.0
+    visual_kd_x: 0.01
+    visual_kp_y: 0.08
+    visual_ki_y: 0.0
+    visual_kd_y: 0.01
+    # 这里只是视觉PID的输出死区，不是投放三帧对准的100像素判定值。
+    visual_pixel_deadzone: 5.0
+    visual_max_xy_velocity: 20.0
+    # 每帧视觉速度最多沿用0.2秒，超时后四轴速度严格归零。
+    visual_data_timeout_sec: 0.2
+    # 视觉跟随下降时，最大下降速度为20cm/s。
+    visual_descent_max_velocity_cm_s: 20.0
+
+route_target_publisher:
+  ros__parameters:
+    # 普通航点到达容差。
+    position_tolerance_cm: 8.0
+    height_tolerance_cm: 8.0
+    yaw_tolerance_deg: 8.0
+    # /fine_data超过该时间未更新即判定视觉丢失。
+    fine_data_timeout_sec: 0.2
+
+    # 投放任务：发现Tag后直接把高度目标设为55cm；
+    # 到达该高度后，两轴像素误差连续3个新帧都不超过100px才投放。
+    drop_alignment_height_cm: 55.0
+    drop_alignment_tolerance_px: 100.0
+    drop_alignment_required_frames: 3
+    # 降落任务发现Tag后直接把高度目标设为45cm，到达后发送停机指令。
+    landing_trigger_height_cm: 45.0
+    # 降落停机后保持全零速度5秒，再发送重新起飞指令。
+    landed_hold_sec: 5.0
+    # 完成投放或重新起飞后的原地爬升高度。
+    return_height_cm: 150.0
+
+    # 每个航点严格使用"(x_cm y_cm z_cm yaw_deg)"格式。
+    # 前normal_count个是普通航点，后面的全部是连续搜索航点。
+    # 投放路线：收到/fly_choice=1时加载。
+    route_drop_waypoints:
+      - "(0 0 150 0)"
+      - "(87.5 -37.5 150 0)"
+      - "(237.5 -37.5 150 0)"
+      - "(290 -65 150 0)"
+      - "(312.5 -102.5 150 0)"
+      - "(290 -140 150 0)"
+      - "(237.5 -187.5 150 0)"
+      - "(87.5 -187.5 150 0)"
+    route_drop_normal_count: 1
+
+    # 降落路线：收到/fly_choice=2时加载。
+    route_land_waypoints:
+      - "(0 0 150 0)"
+      - "(87.5 -37.5 150 0)"
+      - "(237.5 -37.5 150 0)"
+      - "(290 -65 150 0)"
+      - "(312.5 -102.5 150 0)"
+      - "(290 -140 150 0)"
+      - "(237.5 -187.5 150 0)"
+      - "(87.5 -187.5 150 0)"
+    route_land_normal_count: 1

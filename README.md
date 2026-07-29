@@ -1,14 +1,17 @@
 # 26summer TI Cup D 题飞行工作区
 
-本工程实现两套无人机任务路线：跟随小车抛投、跟随小车动态降落。飞行闭环运行在
-ROS Domain 1，任务选择与状态上报运行在 Domain 10。
+本工程实现单架无人机的两套任务：跟随小车缓降投放，以及跟随小车动态降落。飞行闭环运行在 ROS Domain 1，Domain 10 只负责发布 `/fly_choice` 和接收状态。
 
-详细接口、路线配置和调试方法见 [`src/README.md`](src/README.md)。
+详细接口、配置和启动方法见 [`src/README.md`](src/README.md)。
+
+AprilTag 参数可通过独立的 `apriltag_tuner_pkg` 实时调节，在终端按 `s` 保存后，
+正式飞行相机节点会自动读取保存结果。
 
 ```bash
 colcon build --symlink-install
 source install/setup.bash
 
 ROS_DOMAIN_ID=1 ros2 launch my_launch flight.launch.py
-ROS_DOMAIN_ID=10 ros2 run domain_bridge_pkg domain_bridge --ros-args -p local_domain_id:=1
+ROS_DOMAIN_ID=10 ros2 run domain_bridge_pkg domain_bridge --ros-args \
+  -p local_domain_id:=1
 ```
