@@ -92,7 +92,8 @@ height_source: "stm32"  # 默认是 "laser_array"
 
 STM32 串口还负责：
 
-- `/target_velocity`：编码为 `0x31` 的四个小端 `int16`
+- 实际速度 `0x32`：建图产生 `map → laser_link` 后立即以 50 Hz 发送；XY 由定位坐标差分并转换到机体系，Z 由当前 `/height` 差分得到，三个分量均为厘米每秒的小端 `int16`，不受 `/fly_choice` 限制
+- `/target_velocity`：任务控制接受 `/fly_choice=1/2` 后才开始计算和发送，编码为 `0x31` 的四个小端 `int16`
 - `/serial_byte_command=[frame_id,value]`：发送单字节任务帧
 - `/serial_byte_command_result=[frame_id,value,success]`：报告本地串口写入结果
 

@@ -6,8 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system thread)
+find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(serial_comm REQUIRED)
 
 add_executable(uart_to_stm32_node
@@ -20,8 +23,11 @@ target_include_directories(uart_to_stm32_node PRIVATE
 )
 
 ament_target_dependencies(uart_to_stm32_node
+  geometry_msgs
   rclcpp
   std_msgs
+  tf2
+  tf2_ros
   serial_comm
 )
 
@@ -44,8 +50,11 @@ if(BUILD_TESTING)
     include
   )
   ament_target_dependencies(test_fly_choice_serial
+    geometry_msgs
     rclcpp
     std_msgs
+    tf2
+    tf2_ros
     serial_comm
   )
   target_link_libraries(test_fly_choice_serial
@@ -58,8 +67,11 @@ endif()
 
 ament_export_include_directories(include)
 ament_export_dependencies(
+  geometry_msgs
   rclcpp
   std_msgs
+  tf2
+  tf2_ros
   serial_comm
 )
 

@@ -1,10 +1,26 @@
 #include "uart_to_stm32/uart_to_stm32.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <utility>
 
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/exceptions.h>
+
 namespace uart_to_stm32
 {
+
+namespace
+{
+constexpr double kActualVelocityRateHz = 50.0;
+constexpr double kActualVelocityFilterAlpha = 0.35;
+constexpr double kActualVelocityFreshSec = 0.25;
+constexpr double kHeightFreshSec = 0.30;
+constexpr double kMaximumDifferentiationIntervalSec = 0.50;
+constexpr double kMaximumActualVelocityCmS = 200.0;
+}  // namespace
 
 UartToStm32::UartToStm32(rclcpp::Node::SharedPtr node)
 : node_(std::move(node)), has_st_ready_pub_(false)
@@ -44,6 +60,10 @@ bool UartToStm32::initialize(
     node_->create_subscription<std_msgs::msg::UInt8>(
     "/fly_choice_status", accepted_choice_qos,
     std::bind(&UartToStm32::flyChoiceStatusCallback, this, std::placeholders::_1));
+  selected_height_sub_ =
+    node_->create_subscription<std_msgs::msg::Int16>(
+    "/height", 10,
+    std::bind(&UartToStm32::heightCallback, this, std::placeholders::_1));
   const auto height_topic = node_->declare_parameter<std::string>(
     "height_topic", "/height_stm32");
   height_pub_ = node_->create_publisher<std_msgs::msg::Int16>(height_topic, 10);
@@ -63,6 +83,13 @@ bool UartToStm32::initialize(
       RCLCPP_WARN(node_->get_logger(), "Serial protocol error: %s", error.c_str());
     });
 
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+  actual_velocity_timer_ = node_->create_wall_timer(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(1.0 / kActualVelocityRateHz)),
+    std::bind(&UartToStm32::actualVelocityTimerCallback, this));
+
   RCLCPP_INFO(
     node_->get_logger(),
     "STM32 bridge ready on %s at %u baud; frame 0x05 publishes %s in cm; "
@@ -70,7 +97,11 @@ bool UartToStm32::initialize(
     serial_port.c_str(), baud_rate, height_topic.c_str());
   RCLCPP_INFO(
     node_->get_logger(),
-    "Target-velocity serial output is locked until /fly_choice_status accepts mode 1 or 2.");
+    "Actual velocity frame 0x32 will start at %.1f Hz when map -> laser_link is available.",
+    kActualVelocityRateHz);
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Target velocity frame 0x31 remains locked until /fly_choice_status accepts mode 1 or 2.");
   return true;
 }
 
@@ -125,6 +156,164 @@ void UartToStm32::flyChoiceStatusCallback(
   }
 }
 
+void UartToStm32::heightCallback(const std_msgs::msg::Int16::SharedPtr msg)
+{
+  const int64_t now_ns = node_->now().nanoseconds();
+  const double height_cm = static_cast<double>(msg->data);
+
+  if (has_height_sample_) {
+    const double dt =
+      static_cast<double>(now_ns - last_height_receive_ns_) * 1e-9;
+    if (dt > 0.0 && dt <= kMaximumDifferentiationIntervalSec) {
+      const double raw_vz_cm_s = std::clamp(
+        (height_cm - last_height_cm_) / dt,
+        -kMaximumActualVelocityCmS,
+        kMaximumActualVelocityCmS);
+      actual_vz_cm_s_ =
+        kActualVelocityFilterAlpha * raw_vz_cm_s +
+        (1.0 - kActualVelocityFilterAlpha) * actual_vz_cm_s_;
+    } else {
+      actual_vz_cm_s_ = 0.0;
+    }
+  }
+
+  last_height_cm_ = height_cm;
+  last_height_receive_ns_ = now_ns;
+  has_height_sample_ = true;
+}
+
+void UartToStm32::actualVelocityTimerCallback()
+{
+  const int64_t now_ns = node_->now().nanoseconds();
+
+  try {
+    const geometry_msgs::msg::TransformStamped transform =
+      tf_buffer_->lookupTransform("map", "laser_link", tf2::TimePointZero);
+    int64_t pose_stamp_ns = rclcpp::Time(transform.header.stamp).nanoseconds();
+    if (pose_stamp_ns == 0) {
+      pose_stamp_ns = now_ns;
+    }
+
+    const double x_m = transform.transform.translation.x;
+    const double y_m = transform.transform.translation.y;
+    tf2::Quaternion orientation(
+      transform.transform.rotation.x,
+      transform.transform.rotation.y,
+      transform.transform.rotation.z,
+      transform.transform.rotation.w);
+    double roll = 0.0;
+    double pitch = 0.0;
+    double yaw_rad = 0.0;
+    tf2::Matrix3x3(orientation).getRPY(roll, pitch, yaw_rad);
+
+    if (!has_pose_sample_) {
+      last_pose_x_m_ = x_m;
+      last_pose_y_m_ = y_m;
+      last_pose_stamp_ns_ = pose_stamp_ns;
+      actual_vx_body_cm_s_ = 0.0;
+      actual_vy_body_cm_s_ = 0.0;
+      has_pose_sample_ = true;
+      last_pose_receive_ns_ = now_ns;
+    } else if (pose_stamp_ns != last_pose_stamp_ns_) {
+      const double dt =
+        static_cast<double>(pose_stamp_ns - last_pose_stamp_ns_) * 1e-9;
+      if (dt > 0.0 && dt <= kMaximumDifferentiationIntervalSec) {
+        const double vx_map_cm_s = std::clamp(
+          (x_m - last_pose_x_m_) * 100.0 / dt,
+          -kMaximumActualVelocityCmS,
+          kMaximumActualVelocityCmS);
+        const double vy_map_cm_s = std::clamp(
+          (y_m - last_pose_y_m_) * 100.0 / dt,
+          -kMaximumActualVelocityCmS,
+          kMaximumActualVelocityCmS);
+        const double cos_yaw = std::cos(yaw_rad);
+        const double sin_yaw = std::sin(yaw_rad);
+        const double raw_vx_body_cm_s =
+          cos_yaw * vx_map_cm_s + sin_yaw * vy_map_cm_s;
+        const double raw_vy_body_cm_s =
+          -sin_yaw * vx_map_cm_s + cos_yaw * vy_map_cm_s;
+        actual_vx_body_cm_s_ =
+          kActualVelocityFilterAlpha * raw_vx_body_cm_s +
+          (1.0 - kActualVelocityFilterAlpha) * actual_vx_body_cm_s_;
+        actual_vy_body_cm_s_ =
+          kActualVelocityFilterAlpha * raw_vy_body_cm_s +
+          (1.0 - kActualVelocityFilterAlpha) * actual_vy_body_cm_s_;
+      } else {
+        actual_vx_body_cm_s_ = 0.0;
+        actual_vy_body_cm_s_ = 0.0;
+      }
+
+      last_pose_x_m_ = x_m;
+      last_pose_y_m_ = y_m;
+      last_pose_stamp_ns_ = pose_stamp_ns;
+      last_pose_receive_ns_ = now_ns;
+    }
+  } catch (const tf2::TransformException & error) {
+    RCLCPP_DEBUG_THROTTLE(
+      node_->get_logger(), *node_->get_clock(), 2000,
+      "Waiting for map -> laser_link before sending actual velocity 0x32: %s",
+      error.what());
+    return;
+  }
+
+  double vx_body_cm_s = actual_vx_body_cm_s_;
+  double vy_body_cm_s = actual_vy_body_cm_s_;
+  double vz_cm_s = actual_vz_cm_s_;
+  if (static_cast<double>(now_ns - last_pose_receive_ns_) * 1e-9 >
+    kActualVelocityFreshSec)
+  {
+    vx_body_cm_s = 0.0;
+    vy_body_cm_s = 0.0;
+  }
+  if (!has_height_sample_ ||
+    static_cast<double>(now_ns - last_height_receive_ns_) * 1e-9 > kHeightFreshSec)
+  {
+    vz_cm_s = 0.0;
+  }
+
+  sendActualVelocityToSerial(vx_body_cm_s, vy_body_cm_s, vz_cm_s);
+}
+
+void UartToStm32::sendActualVelocityToSerial(
+  double vx_body_cm_per_s,
+  double vy_body_cm_per_s,
+  double vz_cm_per_s)
+{
+  if (!serial_comm_ || !serial_comm_->is_open()) {
+    RCLCPP_WARN_THROTTLE(
+      node_->get_logger(), *node_->get_clock(), 5000,
+      "Serial port is closed; actual velocity 0x32 was not sent.");
+    return;
+  }
+
+  const int16_t values[3] = {
+    static_cast<int16_t>(std::lround(vx_body_cm_per_s)),
+    static_cast<int16_t>(std::lround(vy_body_cm_per_s)),
+    static_cast<int16_t>(std::lround(vz_cm_per_s))};
+  std::vector<uint8_t> payload(6);
+  for (std::size_t index = 0; index < 3; ++index) {
+    const uint16_t encoded = static_cast<uint16_t>(values[index]);
+    payload[index * 2] = static_cast<uint8_t>(encoded & 0xFF);
+    payload[index * 2 + 1] = static_cast<uint8_t>((encoded >> 8) & 0xFF);
+  }
+
+  if (serial_comm_->send_protocol_data(
+      ACTUAL_VELOCITY_FRAME_ID,
+      static_cast<uint8_t>(payload.size()),
+      payload))
+  {
+    RCLCPP_INFO_THROTTLE(
+      node_->get_logger(), *node_->get_clock(), 2000,
+      "Sent actual velocity 0x32: body=(%d,%d,%d) cm/s.",
+      values[0], values[1], values[2]);
+  } else {
+    RCLCPP_WARN_THROTTLE(
+      node_->get_logger(), *node_->get_clock(), 5000,
+      "Failed to send actual velocity 0x32: %s",
+      serial_comm_->get_last_error().c_str());
+  }
+}
+
 void UartToStm32::sendTargetVelocityToSerial(
   float vx_cm_per_s,
   float vy_cm_per_s,
@@ -149,10 +338,16 @@ void UartToStm32::sendTargetVelocityToSerial(
     payload[index * 2] = static_cast<uint8_t>(encoded & 0xFF);
     payload[index * 2 + 1] = static_cast<uint8_t>((encoded >> 8) & 0xFF);
   }
-  if (!serial_comm_->send_protocol_data(
+  if (serial_comm_->send_protocol_data(
       TARGET_VELOCITY_FRAME_ID,
       static_cast<uint8_t>(payload.size()),
       payload))
+  {
+    RCLCPP_INFO_THROTTLE(
+      node_->get_logger(), *node_->get_clock(), 2000,
+      "Sent target velocity 0x31: command=(%d,%d,%d,%d).",
+      values[0], values[1], values[2], values[3]);
+  } else
   {
     RCLCPP_WARN_THROTTLE(
       node_->get_logger(), *node_->get_clock(), 5000,
