@@ -66,8 +66,12 @@ private:
   void targetPositionCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg);
   void heightCallback(const std_msgs::msg::Int16::SharedPtr msg);
   void visualTakeoverCallback(const std_msgs::msg::Bool::SharedPtr msg);
+  void motionHoldCallback(const std_msgs::msg::Bool::SharedPtr msg);
+  void landingDescentCallback(const std_msgs::msg::Bool::SharedPtr msg);
   void fineDataCallback(const std_msgs::msg::Int32MultiArray::SharedPtr msg);
   void controlTimerCallback();
+  void publishZeroVelocity();
+  void resetControllers();
 
   bool getCurrentPose();
   bool hasFreshVisualData(const rclcpp::Time & now_time) const;
@@ -82,6 +86,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr target_position_sub_;
   rclcpp::Subscription<std_msgs::msg::Int16>::SharedPtr height_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr visual_takeover_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr motion_hold_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr landing_descent_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr fine_data_sub_;
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr target_velocity_pub_;
   rclcpp::TimerBase::SharedPtr control_timer_;
@@ -132,6 +138,9 @@ private:
   double error_z_cm_;
 
   bool visual_takeover_active_;
+  bool motion_hold_active_;
+  bool landing_descent_active_;
+  double landing_max_descent_velocity_cm_s_;
   bool has_visual_fine_data_;
   double visual_error_x_px_;
   double visual_error_y_px_;
@@ -140,6 +149,6 @@ private:
   rclcpp::Time last_update_time_;
 };
 
-}  // 命名空间 pid_control_pkg
+}  // namespace pid_control_pkg
 
-#endif  // 头文件保护宏 PID_CONTROL_PKG__PID_CONTROLLER_HPP_
+#endif  // PID_CONTROL_PKG__PID_CONTROLLER_HPP_

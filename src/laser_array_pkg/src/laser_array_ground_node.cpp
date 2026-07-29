@@ -107,8 +107,8 @@ class GroundHeightNode : public rclcpp::Node {
     declare_parameter<double>("geometry_height_tolerance_cm", 6.0);
 
     // --- UART 单点激光融合 ---
-    declare_parameter<bool>("uart_height_fusion_enabled", true);
-    declare_parameter<std::string>("uart_height_topic", "/height_raw");
+    declare_parameter<bool>("uart_height_fusion_enabled", false);
+    declare_parameter<std::string>("uart_height_topic", "/height_stm32");
     declare_parameter<double>("uart_height_bias_cm", 5.0);
     declare_parameter<double>("uart_height_timeout_sec", 0.30);
     declare_parameter<double>("uart_block_margin_cm", 8.0);
@@ -118,6 +118,7 @@ class GroundHeightNode : public rclcpp::Node {
 
     // --- 日志 ---
     declare_parameter<double>("log_period_sec", 0.5);
+    declare_parameter<std::string>("height_topic", "/height_laser_array");
 
     get_parameter("serial_port", serial_port_name_);
     get_parameter("baud_rate", baud_rate_);
@@ -155,6 +156,7 @@ class GroundHeightNode : public rclcpp::Node {
     get_parameter("uart_geometry_consistency_cm", uart_geometry_consistency_cm_);
     get_parameter("uart_blend_weight", uart_blend_weight_);
     get_parameter("obstacle_ema_alpha", obstacle_ema_alpha_);
+    get_parameter("height_topic", height_topic_);
     double log_period_sec = 0.5;
     get_parameter("log_period_sec", log_period_sec);
 
@@ -172,7 +174,7 @@ class GroundHeightNode : public rclcpp::Node {
     uart_blend_weight_ = std::clamp(uart_blend_weight_, 0.0, 1.0);
 
     ground_pub_ = create_publisher<std_msgs::msg::Float32>("/laser_array/ground_height", 10);
-    height_pub_ = create_publisher<std_msgs::msg::Int16>("/height", 10);
+    height_pub_ = create_publisher<std_msgs::msg::Int16>(height_topic_, 10);
     min_pub_ = create_publisher<std_msgs::msg::Float32>("/laser_array/min_range", 10);
     obstacle_height_pub_ = create_publisher<std_msgs::msg::Float32>("/laser_array/obstacle_height", 10);
     raw_pub_ = create_publisher<std_msgs::msg::Float32>("/laser_array/raw_percentile", 10);
@@ -270,6 +272,7 @@ class GroundHeightNode : public rclcpp::Node {
 
   // 参数
   std::string serial_port_name_;
+  std::string height_topic_{"/height_laser_array"};
   int baud_rate_{921600};
   double percentile_{1.0};
   double ground_percentile_{0.95};
@@ -298,8 +301,8 @@ class GroundHeightNode : public rclcpp::Node {
   int geometry_min_support_{3};
   double geometry_candidate_margin_cm_{5.0};
   double geometry_height_tolerance_cm_{6.0};
-  bool uart_height_fusion_enabled_{true};
-  std::string uart_height_topic_{"/height_raw"};
+  bool uart_height_fusion_enabled_{false};
+  std::string uart_height_topic_{"/height_stm32"};
   double uart_height_bias_cm_{5.0};
   double uart_height_timeout_sec_{0.30};
   double uart_block_margin_cm_{8.0};

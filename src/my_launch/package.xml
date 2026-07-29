@@ -3,7 +3,7 @@
 <package format="3">
   <name>my_launch</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Domain-1 flight stack launcher for the D-task aircraft.</description>
   <maintainer email="ubuntu@todo.todo">ubuntu</maintainer>
   <license>Apache-2.0</license>
   <exec_depend>launch</exec_depend>
@@ -13,7 +13,6 @@
   <exec_depend>laser_array_pkg</exec_depend>
   <exec_depend>pid_control_pkg</exec_depend>
   <exec_depend>activity_control_pkg</exec_depend>
-  <exec_depend>drone_camera_pkg</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

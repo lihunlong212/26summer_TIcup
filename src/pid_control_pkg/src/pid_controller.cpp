@@ -152,6 +152,9 @@ PositionPIDController::PositionPIDController()
   error_yaw_deg_(0.0),
   error_z_cm_(0.0),
   visual_takeover_active_(false),
+  motion_hold_active_(true),
+  landing_descent_active_(false),
+  landing_max_descent_velocity_cm_s_(20.0),
   has_visual_fine_data_(false),
   visual_error_x_px_(0.0),
   visual_error_y_px_(0.0),
@@ -162,10 +165,7 @@ PositionPIDController::PositionPIDController()
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-  // /target_position 由 route_target_publisher 用 TRANSIENT_LOCAL+RELIABLE 发布。
-  // 订阅端必须用同样的 durability，否则启动时 PID 后于 route_test_node 启动的话，
-  // 会错过第一条 latched 的 target 消息（启动竞态），导致 PID 永远拿不到目标，
-  // /target_velocity 一直不发，飞机不动。
+  // Keep the most recent waypoint available across startup ordering.
   auto target_qos = rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable();
   target_position_sub_ = create_subscription<std_msgs::msg::Float32MultiArray>(
     "/target_position", target_qos,
@@ -178,6 +178,12 @@ PositionPIDController::PositionPIDController()
   visual_takeover_sub_ = create_subscription<std_msgs::msg::Bool>(
     "/visual_takeover_active", takeover_qos,
     std::bind(&PositionPIDController::visualTakeoverCallback, this, std::placeholders::_1));
+  motion_hold_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "/motion_hold_active", takeover_qos,
+    std::bind(&PositionPIDController::motionHoldCallback, this, std::placeholders::_1));
+  landing_descent_sub_ = create_subscription<std_msgs::msg::Bool>(
+    "/landing_descent_active", takeover_qos,
+    std::bind(&PositionPIDController::landingDescentCallback, this, std::placeholders::_1));
   fine_data_sub_ = create_subscription<std_msgs::msg::Int32MultiArray>(
     "/fine_data", rclcpp::QoS(10),
     std::bind(&PositionPIDController::fineDataCallback, this, std::placeholders::_1));
@@ -232,6 +238,31 @@ void PositionPIDController::visualTakeoverCallback(const std_msgs::msg::Bool::Sh
     get_logger(),
     "Visual takeover mode changed: %s",
     visual_takeover_active_ ? "active" : "inactive");
+}
+
+void PositionPIDController::motionHoldCallback(const std_msgs::msg::Bool::SharedPtr msg)
+{
+  if (motion_hold_active_ == msg->data) {
+    return;
+  }
+  motion_hold_active_ = msg->data;
+  resetControllers();
+  RCLCPP_WARN(
+    get_logger(), "Motion hold changed: %s",
+    motion_hold_active_ ? "ACTIVE (forcing [0,0,0,0])" : "inactive");
+}
+
+void PositionPIDController::landingDescentCallback(
+  const std_msgs::msg::Bool::SharedPtr msg)
+{
+  if (landing_descent_active_ == msg->data) {
+    return;
+  }
+  landing_descent_active_ = msg->data;
+  pid_z_.reset();
+  RCLCPP_INFO(
+    get_logger(), "Landing descent limiter changed: %s",
+    landing_descent_active_ ? "active" : "inactive");
 }
 
 void PositionPIDController::fineDataCallback(const std_msgs::msg::Int32MultiArray::SharedPtr msg)
@@ -352,6 +383,10 @@ std_msgs::msg::Float32MultiArray PositionPIDController::processPID(double dt)
     }
     vel_z_cm = 0.0;
   }
+  if (landing_descent_active_) {
+    vel_z_cm = std::clamp(
+      vel_z_cm, -std::fabs(landing_max_descent_velocity_cm_s_), 0.0);
+  }
 
   cmd.data[0] = static_cast<float>(vel_x_cm);
   cmd.data[1] = static_cast<float>(vel_y_cm);
@@ -362,6 +397,22 @@ std_msgs::msg::Float32MultiArray PositionPIDController::processPID(double dt)
 
 void PositionPIDController::controlTimerCallback()
 {
+  const rclcpp::Time now_time = now();
+  if (motion_hold_active_) {
+    publishZeroVelocity();
+    last_update_time_ = now_time;
+    return;
+  }
+
+  if (visual_takeover_active_ && !hasFreshVisualData(now_time)) {
+    publishZeroVelocity();
+    last_update_time_ = now_time;
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "Visual data is stale; forcing exact [0,0,0,0].");
+    return;
+  }
+
   if (!has_target_position_) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 2000,
@@ -370,10 +421,11 @@ void PositionPIDController::controlTimerCallback()
   }
 
   if (!getCurrentPose()) {
+    publishZeroVelocity();
+    last_update_time_ = now_time;
     return;
   }
 
-  const rclcpp::Time now_time = now();
   double dt = (now_time - last_update_time_).seconds();
   if (dt <= 0.0) {
     dt = 1.0 / std::max(control_frequency_, 1.0);
@@ -394,6 +446,22 @@ void PositionPIDController::controlTimerCallback()
       cmd_vel.data[2],
       cmd_vel.data[3]);
   }
+}
+
+void PositionPIDController::publishZeroVelocity()
+{
+  std_msgs::msg::Float32MultiArray command;
+  command.data = {0.0F, 0.0F, 0.0F, 0.0F};
+  target_velocity_pub_->publish(command);
+}
+
+void PositionPIDController::resetControllers()
+{
+  pid_yaw_.reset();
+  pid_z_.reset();
+  pid_xy_speed_.reset();
+  pid_visual_x_.reset();
+  pid_visual_y_.reset();
 }
 
 void PositionPIDController::loadParameters()
@@ -427,6 +495,8 @@ void PositionPIDController::loadParameters()
   visual_pixel_deadzone_ = declare_parameter<double>("visual_pixel_deadzone", 5.0);
   visual_max_xy_velocity_ = declare_parameter<double>("visual_max_xy_velocity", 20.0);
   visual_data_timeout_sec_ = declare_parameter<double>("visual_data_timeout_sec", 0.13);
+  landing_max_descent_velocity_cm_s_ =
+    declare_parameter<double>("landing_max_descent_velocity_cm_s", 20.0);
 
   pid_yaw_.setPID(kp_yaw, ki_yaw, kd_yaw);
   pid_z_.setPID(kp_z, ki_z, kd_z);

@@ -5,6 +5,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
+    height_topic = LaunchConfiguration("height_topic")
     percentile = LaunchConfiguration("percentile")
     ground_percentile = LaunchConfiguration("ground_percentile")
     obstacle_percentile = LaunchConfiguration("obstacle_percentile")
@@ -38,6 +39,7 @@ def generate_launch_description() -> LaunchDescription:
     params = {
         "serial_port": "/dev/ttyS3",
         "baud_rate": 921600,
+        "height_topic": height_topic,
         # 空间滤波
         "percentile": percentile,  # 无双峰时: 1.0=最大值, 0.8=80分位
         "ground_percentile": ground_percentile,
@@ -82,6 +84,11 @@ def generate_launch_description() -> LaunchDescription:
     }
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "height_topic",
+            default_value="/height_laser_array",
+            description="64 束最大有效距离输出话题，单位 cm。",
+        ),
         DeclareLaunchArgument(
             "percentile",
             default_value="1.0",
@@ -189,12 +196,12 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "uart_height_fusion_enabled",
-            default_value="true",
+            default_value="false",
             description="[激光] 是否启用 UART 单点激光对 obstacle_height 的辅助融合。",
         ),
         DeclareLaunchArgument(
             "uart_height_topic",
-            default_value="/height_raw",
+            default_value="/height_stm32",
             description="[激光] 用于辅助障碍测高的 UART 原始高度话题。",
         ),
         DeclareLaunchArgument(

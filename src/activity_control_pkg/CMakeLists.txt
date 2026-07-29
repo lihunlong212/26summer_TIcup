@@ -38,9 +38,8 @@ add_executable(route_target_publisher_node src/route_target_publisher_main.cpp)
 target_link_libraries(route_target_publisher_node route_target_publisher)
 ament_target_dependencies(route_target_publisher_node rclcpp)
 
-add_executable(route_test_node src/route_test_node.cpp)
-target_link_libraries(route_test_node route_target_publisher)
-ament_target_dependencies(route_test_node rclcpp)
+add_executable(height_source_mux_node src/height_source_mux.cpp)
+ament_target_dependencies(height_source_mux_node rclcpp std_msgs)
 
 install(TARGETS route_target_publisher
   EXPORT export_route_target_publisher
@@ -51,7 +50,7 @@ install(TARGETS route_target_publisher
 
 install(TARGETS
   route_target_publisher_node
-  route_test_node
+  height_source_mux_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -59,9 +58,9 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
-install(DIRECTORY launch
+install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
-  FILES_MATCHING PATTERN "*.launch.py")
+)
 
 ament_export_dependencies(
   rclcpp

@@ -1,141 +1,103 @@
-# ROS 2 Workspace `src/` Overview
+# D 题双路线飞行工程
 
-This workspace currently keeps the UAV control path: mapping/localization, waypoint publishing, aircraft PID, the STM32 serial bridge, and `drone_camera_pkg`.
+## 启动
 
-## Quick Start
-
-Run from the workspace root:
+在工作区根目录构建并加载环境：
 
 ```bash
 colcon build --symlink-install
-# Windows PowerShell
-.\install\setup.ps1
-# Linux/macOS
 source install/setup.bash
 ```
 
-## Main Data Flow
+在 WSL 中构建时，工作区路径应避免中文和空格；Humble 的 ROSIDL 会把这类路径错误
+拆分。部署到香橙派的普通英文路径不受影响。
 
-- `bluesea2` publishes `/scan`
-- `activity_control_pkg` publishes `/target_position` and `/active_controller`
-- `drone_camera_pkg` publishes `/fine_data`
-- An external ROS 2 node publishes `/route_choice` to select which waypoint group should run
-- `activity_control_pkg` enters visual takeover for selected waypoints, republishes the target with a configured visual-alignment height, and publishes `/visual_takeover_active`
-- `pid_control_pkg` subscribes to `/target_position`, `/height`, `/visual_takeover_active`, and `/fine_data`, then publishes `/target_velocity`
-- `activity_control_pkg` advances pickup/drop phases after visual alignment succeeds
-- `uart_to_stm32` listens to `/route_choice` and forwards `/target_velocity` to the flight controller only while the selected route task is active
-- `activity_control_pkg` publishes `/mission_complete` after all targets complete
-- `uart_to_stm32` sends `/mission_complete` as serial frame `0x66` with payload `0x06`
-- `uart_to_stm32` also publishes `/height`, `/is_st_ready`, and `/mission_step`
-
-## Packages
-
-### `activity_control_pkg`
-
-Maintains the waypoint queue, checks whether the current target is reached, and triggers visual takeover when `Target.is_takeover` is `true`.
-
-Route selection behavior:
-
-- The node starts in standby and does not publish any waypoint until `/route_choice` is received
-- `/route_choice` uses `std_msgs/msg/UInt8`
-- `1` starts the first built-in waypoint group and `2` starts the second built-in waypoint group
-- After a valid route starts, later `/route_choice` messages are ignored for the rest of that run
-
-Visual takeover behavior:
-
-- XY alignment still comes from `/fine_data`
-- Z is switched to the configurable `visual_takeover_target_height_cm`
-- `height_tolerance_cm` is shared by normal waypoint reach checks and visual-alignment height checks
-- Pickup/drop phases continue only after XY stays aligned for the required frames and height is also within tolerance
-
-Key files:
-
-- `activity_control_pkg/include/activity_control_pkg/route_target_publisher.hpp`
-- `activity_control_pkg/src/route_target_publisher.cpp`
-- `activity_control_pkg/src/route_target_publisher_main.cpp`
-- `activity_control_pkg/src/route_test_node.cpp`
-
-Visual takeover topics:
-
-- `/visual_takeover_active`
-- `/mission_complete`
-
-### `drone_camera_pkg`
-
-Runs camera preview and black-circle detection, then publishes:
-
-- `/fine_data`: pixel error `[x_px, y_px]`
-
-### `my_carto_pkg`
-
-Launches lidar, URDF, Cartographer, and RViz together.
-
-Key file:
-
-- `my_carto_pkg/launch/fly_carto.launch.py`
-
-### `robot_action_demo`
-
-Provides the `dispatch_order` action server. When a task is accepted, it reads
-`robot_action_demo/config/task_launch_map.yaml` and starts the configured launch command.
-The default task mapping starts `my_launch demo1.launch.py`.
-
-### `my_launch`
-
-Launches the complete demo flow.
-
-Key file:
-
-- `my_launch/launch/demo1.launch.py`
-
-### `pid_control_pkg`
-
-The only PID package left in the workspace. It converts target position and current pose into `/target_velocity`.
-
-Control behavior:
-
-- Normal mode: XY / Z / Yaw use waypoint PID
-- Visual takeover mode: XY uses visual PID from `/fine_data`, while Z / Yaw keep using the original PID
-
-Key files:
-
-- `pid_control_pkg/include/pid_control_pkg/pid_controller.hpp`
-- `pid_control_pkg/src/pid_controller.cpp`
-- `pid_control_pkg/launch/position_pid_controller.launch.py`
-
-### `serial_comm`
-
-Reusable serial communication library used by `uart_to_stm32`.
-
-### `uart_to_stm32`
-
-Bridges ROS topics and the STM32/flight-controller serial protocol.
-
-Remote-control gating:
-
-- `/route_choice` is published by an external ROS 2 node using `std_msgs/msg/UInt8`
-- valid route IDs currently include `1` and `2`
-- after a valid `/route_choice`, target velocity forwarding stays enabled only for the active mission
-- before route start and after mission completion, `/target_velocity` messages are ignored and not sent to STM32
-
-Key files:
-
-- `uart_to_stm32/src/uart_to_stm32_node.cpp`
-- `uart_to_stm32/src/uart_to_stm32.cpp`
-- `uart_to_stm32/launch/uart_to_stm32.launch.py`
-
-Current serial frame usage:
-
-- `0x31`: target velocity
-- `0x32`: velocity/pose related data
-- `0x11`: servo control, payload length `1`
-- `0x66`: mission complete, payload `0x06`, sent `3` times
-
-## Common Launch Commands
+分别启动本地飞行闭环和跨域桥：
 
 ```bash
-ros2 launch pid_control_pkg position_pid_controller.launch.py
-ros2 launch uart_to_stm32 uart_to_stm32.launch.py
-ros2 launch my_launch demo1.launch.py
-ros2 run robot_action_demo dispatch_server
+ROS_DOMAIN_ID=1 ros2 launch my_launch flight.launch.py
+ROS_DOMAIN_ID=10 ros2 run domain_bridge_pkg domain_bridge --ros-args -p local_domain_id:=1
 ```
+
+`flight.launch.py` 启动蓝海雷达、robot_state_publisher、Cartographer、STM32
+串口、面阵激光、高度来源选择器、PID 和任务控制器，不启动 RViz、占据栅格、相机或跨域桥。
+
+## 路线选择
+
+在 Domain 10 发布：
+
+```bash
+ROS_DOMAIN_ID=10 ros2 topic pub --once /route_choice std_msgs/msg/UInt8 "{data: 1}"
+```
+
+- `1`：跟随小车 5 秒后发送 `0x11:[0x01]`，然后返航降落。
+- `2`：对准小车并以不低于 `-20 cm/s` 的速度缓降；低于 `45 cm` 时发送
+  `0x44:[0x01]`，5 秒后发送 `0x44:[0x00]`，随后原地升高并返航。
+- 其他值不会启动任务。
+
+路线坐标及航点类型在
+[`activity_control_pkg/config/routes.yaml`](activity_control_pkg/config/routes.yaml)
+中配置。类型为 `1=NORMAL`、`2=SEARCH_DROP`、`3=SEARCH_LAND`。
+
+## 视觉预留接口
+
+本轮不启动视觉节点。后续视觉程序只需发布：
+
+- 话题：`/fine_data`
+- 类型：`std_msgs/msg/Int32MultiArray`
+- `data[0]`：机体前后方向像素误差
+- `data[1]`：机体左右方向像素误差
+
+数据超过 `0.2 s` 未更新时，PID 直接输出
+`/target_velocity=[0,0,0,0]`；抛投路线的连续 5 秒计时也会清零。
+`drone_camera_pkg` 仅保留源码，等待后续视觉整合。
+
+## 高度来源
+
+飞行高度统一由 `/height` 提供，PID、航点状态机和 Domain 10 状态上报都只订阅该话题。
+默认来源是面阵激光：`laser_array_pkg` 每帧取 64 束中的**最高有效距离**并发布
+`/height_laser_array`（`Int16`，厘米）；高度选择器将它转发到 `/height`。
+
+STM32 的 `0x05` 仅发布到 `/height_stm32`，默认不参与高度 PID。若需要临时切换，修改
+[`my_launch/config/height_source.yaml`](my_launch/config/height_source.yaml) 中的：
+
+```yaml
+height_source: laser_array  # 可改为 stm32
+```
+
+重启 `flight.launch.py` 后生效。激光节点默认关闭 UART 辅助融合，避免 STM32 高度影响面阵激光高度。
+
+## 串口接口
+
+`uart_to_stm32` 默认使用 `/dev/ttyS6`、`921600`：
+
+- 接收 `0x05`：两个小端有符号字节，发布 `/height_stm32`，类型 `Int16`，单位厘米；默认不参与控制。
+- 发送 `0x31`：`/target_velocity` 的四个 `int16` 小端值。
+- `/serial_byte_command=[frame_id,value]`：发送长度为 1 的通用任务帧。
+- `/serial_byte_command_result=[frame_id,value,success]`：报告本地串口完整写入结果。
+
+任务状态机只在状态切换时请求一次 `0x11` 或 `0x44`。写入失败会进入
+`ERROR` 并保持全零速度；`0x44:[0x01]` 的停留计时从本地写入成功开始。
+
+## 跨域状态
+
+Domain 10 的 `/fleet/device_status` 为 JSON 字符串，默认 10 Hz，包含：
+
+`device_id`、`x_cm`、`y_cm`、`z_cm`、`yaw_deg`、`route_choice`、
+`current_waypoint_index`、`mission_state`、`vision_active`、`vision_fresh`。
+
+只有 `/route_choice` 和上述状态被跨域桥转发；Domain 1 的控制话题不会暴露到
+Domain 10。
+
+## 保留包
+
+- `activity_control_pkg`：双路线航点和任务状态机。
+- `pid_control_pkg`：普通航点、视觉 XY、缓降限制及全零安全输出。
+- `uart_to_stm32`、`serial_comm`：STM32 协议与串口。
+- `laser_array_pkg`：面阵激光高度（64 束最大有效距离）及下方障碍信息。
+- `bluesea2`、`my_carto_pkg`：雷达和 Cartographer 定位。
+- `domain_bridge_pkg`：Domain 1/10 轻量桥。
+- `my_launch`：Domain 1 总启动。
+- `drone_camera_pkg`：暂存，当前不启动。
+
+已删除旧 Action 调度、多无人机订单及第二架无人机相关代码。
