@@ -20,7 +20,8 @@ options = {
   trajectory_builder = TRAJECTORY_BUILDER,
   map_frame = "map",
   tracking_frame = "laser_link",
-  published_frame = "base_link",
+  -- 飞控闭环直接使用 map -> laser_link，不再依赖无用的 base_link 静态 TF。
+  published_frame = "laser_link",
   odom_frame = "odom",
   provide_odom_frame = true,
   publish_frame_projected_to_2d = true,

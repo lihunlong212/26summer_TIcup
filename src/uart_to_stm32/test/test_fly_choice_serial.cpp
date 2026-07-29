@@ -174,6 +174,23 @@ TEST_F(FlyChoiceSerialTest, ConvertsValidModeFramesToLocalFlyChoice)
   EXPECT_EQ(probe->received_choices.back(), 2);
 }
 
+TEST_F(FlyChoiceSerialTest, SuppressesRepeatedChoiceUntilIdleRearmsIt)
+{
+  writeFrame({0xAA, 0xFF, 0x11, 0x01, 0x01, 0xBC, 0x84});
+  writeFrame({0xAA, 0xFF, 0x11, 0x01, 0x01, 0xBC, 0x84});
+  pump(300ms);
+  ASSERT_EQ(probe->received_choices.size(), 1U);
+  EXPECT_EQ(probe->received_choices.back(), 1);
+
+  // Mode 0 is the STM32 idle value: it is not published, but re-arms the
+  // same mission choice for a later deliberate 0 -> 1 edge.
+  writeFrame({0xAA, 0xFF, 0x11, 0x01, 0x00, 0xBB, 0x83});
+  writeFrame({0xAA, 0xFF, 0x11, 0x01, 0x01, 0xBC, 0x84});
+  pump(300ms);
+  ASSERT_EQ(probe->received_choices.size(), 2U);
+  EXPECT_EQ(probe->received_choices.back(), 1);
+}
+
 TEST_F(FlyChoiceSerialTest, RejectsInvalidModeAndChecksum)
 {
   writeFrame({0xAA, 0xFF, 0x11, 0x01, 0x03, 0xBE, 0x86});

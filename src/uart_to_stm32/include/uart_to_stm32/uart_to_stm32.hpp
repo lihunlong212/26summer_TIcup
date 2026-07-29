@@ -54,6 +54,7 @@ private:
     serial_byte_command_result_pub_;
   bool has_st_ready_pub_;
   std::atomic<bool> velocity_output_enabled_{false};
+  uint8_t last_stm32_fly_choice_{0};
 
   static constexpr uint8_t TARGET_VELOCITY_FRAME_ID = 0x31;
   static constexpr uint8_t ST_READY_QUERY_ID = 0xF1;

@@ -197,21 +197,34 @@ void UartToStm32::protocolDataHandler(
 {
   if (id == FLY_CHOICE_FRAME_ID) {
     if (data.size() != 1) {
-      RCLCPP_WARN(
-        node_->get_logger(),
+      RCLCPP_WARN_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 5000,
         "Fly-choice frame 0x11 must contain exactly 1 byte; received %zu.",
         data.size());
       return;
     }
-    if (data[0] != 1 && data[0] != 2) {
-      RCLCPP_WARN(
-        node_->get_logger(),
-        "Ignoring invalid STM32 fly choice %u; valid values are 1 and 2.",
-        static_cast<unsigned>(data[0]));
+
+    const uint8_t choice = data[0];
+    // STM32 continuously reports 0 while its mode switch is idle.  Treat 0 as
+    // the neutral state and use it to re-arm a later 0 -> 1/2 selection edge.
+    if (choice == 0) {
+      last_stm32_fly_choice_ = 0;
       return;
     }
+    if (choice != 1 && choice != 2) {
+      RCLCPP_WARN_THROTTLE(
+        node_->get_logger(), *node_->get_clock(), 5000,
+        "Ignoring invalid STM32 fly choice %u; valid values are 1 and 2.",
+        static_cast<unsigned>(choice));
+      return;
+    }
+    if (choice == last_stm32_fly_choice_) {
+      return;
+    }
+    last_stm32_fly_choice_ = choice;
+
     std_msgs::msg::UInt8 msg;
-    msg.data = data[0];
+    msg.data = choice;
     fly_choice_pub_->publish(msg);
     RCLCPP_INFO(
       node_->get_logger(),
