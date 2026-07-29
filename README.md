@@ -12,6 +12,4 @@ colcon build --symlink-install
 source install/setup.bash
 
 ROS_DOMAIN_ID=1 ros2 launch my_launch flight.launch.py
-ros2 run domain_bridge_pkg domain_bridge --ros-args --params-file \
-  ~/26summer_TIcup/install/my_launch/share/my_launch/config/flight.yaml
 ```

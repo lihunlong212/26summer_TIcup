@@ -32,6 +32,13 @@ def generate_launch_description() -> LaunchDescription:
                 default_value=default_config,
                 description="PID, vision-control, height-source and waypoint parameters.",
             ),
+            Node(
+                package="domain_bridge_pkg",
+                executable="domain_bridge",
+                name="domain_bridge",
+                output="screen",
+                parameters=[config_file],
+            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     _package_launch("my_carto_pkg", "fly_carto.launch.py")

@@ -7,11 +7,9 @@ colcon build --symlink-install
 source install/setup.bash
 
 ROS_DOMAIN_ID=1 ros2 launch my_launch flight.launch.py
-ros2 run domain_bridge_pkg domain_bridge --ros-args --params-file \
-  ~/26summer_TIcup/install/my_launch/share/my_launch/config/flight.yaml
 ```
 
-`flight.launch.py` 启动蓝海雷达、Cartographer、STM32 串口、面阵激光、AprilTag 相机、高度选择器、PID 和任务控制器，不启动 RViz、占据栅格或相机预览。
+`flight.launch.py` 启动蓝海雷达、Cartographer、STM32 串口、面阵激光、AprilTag 相机、高度选择器、PID、任务控制器和 Domain 1/42 跨域桥，不启动 RViz、占据栅格或相机预览。跨域桥已包含在总启动中，不要再单独启动第二个桥进程。
 
 [`my_launch/config/flight.yaml`](my_launch/config/flight.yaml) 保存跨域通信、PID、视觉控制阈值、任务高度、航点和高度源选择，不保存硬件串口、相机或雷达驱动参数。蓝海雷达沿用原工程的驱动启动与参数文件；STM32、面阵激光和相机使用各自代码默认值。Cartographer 的 `.lua` 属于算法配置资源。
 
