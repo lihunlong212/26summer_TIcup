@@ -7,13 +7,13 @@ colcon build --symlink-install
 source install/setup.bash
 
 ROS_DOMAIN_ID=1 ros2 launch my_launch flight.launch.py
-ROS_DOMAIN_ID=10 ros2 run domain_bridge_pkg domain_bridge --ros-args \
-  -p local_domain_id:=1
+ros2 run domain_bridge_pkg domain_bridge --ros-args --params-file \
+  ~/26summer_TIcup/install/my_launch/share/my_launch/config/flight.yaml
 ```
 
-`flight.launch.py` 启动蓝海雷达、robot_state_publisher、Cartographer、STM32 串口、面阵激光、AprilTag 相机、高度选择器、PID 和任务控制器，不启动 RViz、占据栅格或相机预览。
+`flight.launch.py` 启动蓝海雷达、Cartographer、STM32 串口、面阵激光、AprilTag 相机、高度选择器、PID 和任务控制器，不启动 RViz、占据栅格或相机预览。
 
-[`my_launch/config/flight.yaml`](my_launch/config/flight.yaml) 只保存 PID、视觉控制阈值、任务高度、航点和高度源选择，不保存硬件串口、相机或雷达驱动参数。蓝海雷达沿用原工程的驱动启动与参数文件；STM32、面阵激光、相机和跨域桥使用各自代码默认值。Cartographer 的 `.lua` 属于算法配置资源。
+[`my_launch/config/flight.yaml`](my_launch/config/flight.yaml) 保存跨域通信、PID、视觉控制阈值、任务高度、航点和高度源选择，不保存硬件串口、相机或雷达驱动参数。蓝海雷达沿用原工程的驱动启动与参数文件；STM32、面阵激光和相机使用各自代码默认值。Cartographer 的 `.lua` 属于算法配置资源。
 
 若在 WSL 中构建，工作区路径不能包含中文或空格，否则 ROSIDL 可能错误拆分路径。部署到香橙派的纯英文路径不受影响。
 
@@ -21,7 +21,7 @@ ROS_DOMAIN_ID=10 ros2 run domain_bridge_pkg domain_bridge --ros-args \
 
 工程启动后雷达、Cartographer、TF和高度节点先正常运行，可在等待任务期间完成建图。PID和STM32目标速度串口输出保持静默，只有任务控制器接受合法飞行模式后才放行；放行后的视觉丢失、投放和降落保持阶段仍按安全逻辑持续发送全零速度。
 
-飞行模式可以来自STM32本地串口或Domain 10。STM32发送匿名协议V7帧：
+飞行模式可以来自STM32本地串口或配置的远端域（默认Domain 42）。STM32发送匿名协议V7帧：
 
 ```text
 AA FF 11 01 mode SC1 SC2
@@ -29,16 +29,16 @@ AA FF 11 01 mode SC1 SC2
 
 其中`mode=1`为投放、`mode=2`为降落；其他值、错误长度或错误校验均忽略。示例完整帧为`AA FF 11 01 01 BC 84`和`AA FF 11 01 02 BD 85`。串口节点将合法模式发布到Domain 1的`/fly_choice`。
 
-也可以在 Domain 10 发布：
+也可以在默认的 Domain 42 发布：
 
 ```bash
-ROS_DOMAIN_ID=10 ros2 topic pub --once /fly_choice std_msgs/msg/UInt8 "{data: 1}"
+ROS_DOMAIN_ID=42 ros2 topic pub --once /fly_choice std_msgs/msg/UInt8 "{data: 1}"
 ```
 
 - `1`：投放路线。发现 AprilTag 后视觉接管 XY，高度目标直接设为 `55 cm`。到达后，两轴误差连续 3 个新帧都不超过 `100 px`，才发送一次 `0x11:[0x01]`。
-- `2`：降落路线。发现 AprilTag 后视觉接管 XY，高度目标直接使用配置值（当前为 `40 cm`）。到达后发送一次 `0x44:[0x01]`；持续发送全零目标速度 5 秒，再发送一次 `0x44:[0x00]`。
+- `2`：降落路线。发现 AprilTag 后视觉接管 XY，高度目标直接使用配置值（当前为 `45 cm`）。到达后发送一次 `0x44:[0x01]`；持续发送全零目标速度 5 秒，再发送一次 `0x44:[0x00]`。
 - 其他值忽略；任务执行中的重复选择不会重置任务。
-- STM32与Domain 10几乎同时选择时采用先到先执行，后到的选择在任务活动期间被忽略。
+- STM32与远端域几乎同时选择时采用先到先执行，后到的选择在任务活动期间被忽略。
 
 航点在 `flight.yaml` 中写成：
 
@@ -52,7 +52,7 @@ route_drop_normal_count: 1
 
 四个数依次是 `(x_cm y_cm z_cm yaw_deg)`。前 `normal_count` 个是普通航点，剩余连续后缀均为搜索航点。四元组格式错误、包含非有限数值，或 `normal_count` 不小于航点总数时，控制器拒绝启动该任务。
 
-普通航段忽略 `/fine_data`。进入首个搜索航点时会清除旧视觉时间戳；搜索航点之间不等待，飞行途中收到新鲜 AprilTag 数据就立即裁剪剩余搜索航点并接管 XY。投放和降落分别把高度目标设为 `55 cm`、`40 cm`，视觉下降速度不低于 `-20 cm/s`。
+普通航段忽略 `/fine_data`。进入首个搜索航点时会清除旧视觉时间戳；搜索航点之间不等待，飞行途中收到新鲜 AprilTag 数据就立即裁剪剩余搜索航点并接管 XY。投放和降落分别把高度目标设为 `55 cm`、`45 cm`，视觉下降速度不低于 `-20 cm/s`。
 
 每个 `/fine_data` 只作为一个新视觉帧参与计数，但该帧对应的控制速度最多可以沿用 `0.2 s`。超过 `0.2 s` 未更新时，三帧计数清零，`/target_velocity` 持续精确输出 `[0,0,0,0]`；收到新帧后恢复控制。
 
@@ -93,19 +93,27 @@ height_source: "stm32"  # 默认是 "laser_array"
 STM32 串口还负责：
 
 - 实际速度 `0x32`：建图产生 `map → laser_link` 后立即以 50 Hz 发送；XY 由定位坐标差分并转换到机体系，Z 由当前 `/height` 差分得到，三个分量均为厘米每秒的小端 `int16`，不受 `/fly_choice` 限制
-- `/target_velocity`：任务控制接受 `/fly_choice=1/2` 后才开始计算和发送，编码为 `0x31` 的四个小端 `int16`
+- `/target_velocity`：任务控制接受 `/fly_choice=1/2`，并同时取得目标航点、`map → laser_link` TF 和 `/height` 后才开始计算和发送，编码为 `0x31` 的四个小端 `int16`
 - `/serial_byte_command=[frame_id,value]`：发送单字节任务帧
 - `/serial_byte_command_result=[frame_id,value,success]`：报告本地串口写入结果
 
 任务帧仅在状态切换时请求一次。串口失败会进入 `ERROR` 并保持全零速度。
 
-## 跨域状态
+## 跨域坐标和状态
 
-Domain 10 的 `/fleet/device_status` 是默认 10 Hz 的 JSON 字符串，包含：
+`flight.yaml` 默认配置 `local_domain_id: 1`、`remote_domain_id: 42`。Domain 42 的 `/drone_position` 类型为 `Float32MultiArray`，内容严格为 `[x_cm, y_cm]`，默认 10 Hz；只有本地 TF 可用时才发布。域ID、坐标话题、任务选择话题、状态话题和频率均可在同一配置段修改。
 
-`x_cm`、`y_cm`、`z_cm`、`yaw_deg`、`fly_choice`、`current_waypoint_index`、`mission_state`、`vision_active`、`vision_fresh`。
+Domain 42 的 `/drone_state` 类型为 `UInt8`，整个工程只发送 `1~5`，不会发送 `0`：
 
-桥只把 Domain 10 的 `/fly_choice` 转发到 Domain 1，并把上述状态送回 Domain 10；Domain 1 的控制话题不会跨域暴露。
+- `1`：首次有效目标速度已经计算，正在飞往首个起飞航点
+- `2`：搜索或伴飞；发现 Tag 后高度仍大于等于 `80 cm` 也保持该状态
+- `3`：投放任务发现 Tag 且高度低于 `80 cm`
+- `4`：降落任务发现 Tag 且高度低于 `80 cm`，包括停机、等待和解锁阶段
+- `5`：投放完成、降落解锁成功或搜索结束后的返航阶段；最终落地后继续保持
+
+首次有效目标速度产生前 `/drone_state` 完全静默。状态变化会立即转发，随后按配置频率持续发送。旧的 `/fleet/device_status` JSON 和 `/mission_state` 字符串话题均已删除。
+
+桥只把 Domain 42 的 `/fly_choice` 转发到 Domain 1，并把坐标和 `/drone_state` 送回 Domain 42；Domain 1 的其他控制话题不会跨域暴露。
 
 ## 自动测试
 
@@ -118,4 +126,4 @@ colcon test --packages-select \
 colcon test-result --verbose
 ```
 
-它们覆盖航点配置拒绝、搜索段切换、投放三帧判定、投放/降落单次任务帧、实时坐标返航、视觉下降限速、持续全零速度、调参文件保存与加载、合成 AprilTag 检测，以及 Domain 1/10 双 Context 通信和状态 JSON 字段。
+它们覆盖航点配置拒绝、搜索段切换、投放三帧判定、投放/降落单次任务帧、实时坐标返航、视觉下降限速、持续全零速度、调参文件保存与加载、合成 AprilTag 检测，以及 Domain 1/42 双 Context 通信、厘米坐标和 `/drone_state` 状态码。

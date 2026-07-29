@@ -142,6 +142,7 @@ private:
 
   bool visual_takeover_active_;
   bool flight_control_enabled_;
+  bool has_completed_valid_control_cycle_;
   bool motion_hold_active_;
   bool visual_descent_active_;
   double visual_descent_max_velocity_cm_s_;

@@ -49,7 +49,10 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   visual_active_(false),
   motion_hold_active_(true),
   visual_descent_active_(false),
-  last_vision_fresh_(false)
+  last_vision_fresh_(false),
+  drone_state_enabled_(false),
+  has_published_drone_state_(false),
+  last_drone_state_(0)
 {
   map_frame_ = declare_parameter<std::string>("map_frame", "map");
   robot_frame_ = declare_parameter<std::string>("robot_frame", "laser_link");
@@ -67,14 +70,18 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   landing_trigger_height_cm_ =
     declare_parameter<double>("landing_trigger_height_cm", 45.0);
   return_height_cm_ = declare_parameter<double>("return_height_cm", 150.0);
+  drone_state_action_height_cm_ =
+    declare_parameter<double>("drone_state_action_height_cm", 80.0);
   if (fine_data_timeout_sec_ <= 0.0 ||
     drop_alignment_height_cm_ < 0.0 ||
     drop_alignment_tolerance_px_ < 0.0 ||
-    drop_alignment_required_frames_ <= 0)
+    drop_alignment_required_frames_ <= 0 ||
+    drone_state_action_height_cm_ < 0.0)
   {
     throw std::invalid_argument(
             "fine_data_timeout_sec must be positive; drop alignment parameters "
-            "must use non-negative height/tolerance and a positive frame count");
+            "and drone_state_action_height_cm must use non-negative values; "
+            "drop frame count must be positive");
   }
   declareRouteParameters(kDropFlyChoice);
   declareRouteParameters(kLandingFlyChoice);
@@ -93,8 +100,8 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
     create_publisher<std_msgs::msg::Bool>("/visual_descent_active", durable_qos);
   vision_fresh_pub_ =
     create_publisher<std_msgs::msg::Bool>("/vision_fresh", durable_qos);
-  mission_state_pub_ =
-    create_publisher<std_msgs::msg::String>("/mission_state", durable_qos);
+  drone_state_pub_ =
+    create_publisher<std_msgs::msg::UInt8>("/drone_state", durable_qos);
   waypoint_index_pub_ =
     create_publisher<std_msgs::msg::Int32>("/current_waypoint_index", durable_qos);
   fly_choice_status_pub_ =
@@ -111,6 +118,12 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   fine_data_sub_ = create_subscription<std_msgs::msg::Int32MultiArray>(
     "/fine_data", 10,
     std::bind(&RouteTargetPublisherNode::fineDataCallback, this, std::placeholders::_1));
+  target_velocity_sub_ =
+    create_subscription<std_msgs::msg::Float32MultiArray>(
+    "/target_velocity", 10,
+    std::bind(
+      &RouteTargetPublisherNode::targetVelocityCallback,
+      this, std::placeholders::_1));
   serial_command_result_sub_ =
     create_subscription<std_msgs::msg::UInt8MultiArray>(
     "/serial_byte_command_result", 10,
@@ -128,7 +141,6 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   publishVisualDescentState(false);
   publishMotionHold(true);
   publishVisionFresh(false);
-  publishMissionState();
   publishCurrentWaypointIndex();
 
   RCLCPP_INFO(
@@ -137,10 +149,10 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   RCLCPP_INFO(
     get_logger(),
     "fine_data_timeout=%.3fs drop_alignment=%.1fcm/%.1fpx/%ldframes "
-    "landing_trigger=%.1fcm landed_hold=%.1fs",
+    "landing_trigger=%.1fcm state_action_height=%.1fcm landed_hold=%.1fs",
     fine_data_timeout_sec_, drop_alignment_height_cm_,
     drop_alignment_tolerance_px_, drop_alignment_required_frames_,
-    landing_trigger_height_cm_, landed_hold_sec_);
+    landing_trigger_height_cm_, drone_state_action_height_cm_, landed_hold_sec_);
 }
 
 void RouteTargetPublisherNode::declareRouteParameters(uint8_t fly_choice)
@@ -214,6 +226,7 @@ void RouteTargetPublisherNode::loadRoute(uint8_t fly_choice)
   returning_ = false;
   search_segment_active_ = false;
   has_fine_data_ = false;
+  drone_state_enabled_ = false;
   resetDropAlignmentCount();
   publishVisualState(false);
   publishVisualDescentState(false);
@@ -235,6 +248,7 @@ void RouteTargetPublisherNode::heightCallback(const std_msgs::msg::Int16::Shared
 {
   current_height_cm_ = static_cast<double>(msg->data);
   has_height_ = true;
+  publishDroneStateIfReady();
 }
 
 void RouteTargetPublisherNode::fineDataCallback(
@@ -277,6 +291,31 @@ void RouteTargetPublisherNode::fineDataCallback(
     } else {
       resetDropAlignmentCount();
     }
+  }
+}
+
+void RouteTargetPublisherNode::targetVelocityCallback(
+  const std_msgs::msg::Float32MultiArray::SharedPtr msg)
+{
+  if (msg->data.size() != 4 ||
+    !std::all_of(
+      msg->data.begin(), msg->data.end(),
+      [](float value) {return std::isfinite(value);}))
+  {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "Ignoring invalid /target_velocity; expected exactly four finite values.");
+    return;
+  }
+  if (state_ == MissionState::WaitingRoute || state_ == MissionState::Error) {
+    return;
+  }
+  if (!drone_state_enabled_) {
+    drone_state_enabled_ = true;
+    RCLCPP_INFO(
+      get_logger(),
+      "First valid target velocity observed; /drone_state reporting is enabled.");
+    publishDroneStateIfReady(true);
   }
 }
 
@@ -513,6 +552,7 @@ void RouteTargetPublisherNode::updateSearchSegmentState()
     last_vision_fresh_ = false;
     publishVisionFresh(false);
   }
+  publishDroneStateIfReady();
 }
 
 void RouteTargetPublisherNode::startReturnRoute(bool takeoff_from_car)
@@ -712,14 +752,57 @@ void RouteTargetPublisherNode::setState(MissionState state)
   }
   state_ = state;
   state_start_time_ = now();
-  publishMissionState();
+  publishDroneStateIfReady();
 }
 
-void RouteTargetPublisherNode::publishMissionState()
+uint8_t RouteTargetPublisherNode::desiredDroneState() const
 {
-  std_msgs::msg::String msg;
-  msg.data = stateName(state_);
-  mission_state_pub_->publish(msg);
+  switch (state_) {
+    case MissionState::WaitingRoute:
+      return 0;
+    case MissionState::Navigating:
+      return search_segment_active_ ? 2 : 1;
+    case MissionState::FollowDrop:
+      return has_height_ && current_height_cm_ < drone_state_action_height_cm_ ? 3 : 2;
+    case MissionState::FollowLand:
+      return has_height_ && current_height_cm_ < drone_state_action_height_cm_ ? 4 : 2;
+    case MissionState::DropCommandPending:
+      return 3;
+    case MissionState::LandingStopPending:
+    case MissionState::LandedHold:
+    case MissionState::TakeoffCommandPending:
+      return 4;
+    case MissionState::WaitingTakeoffPose:
+    case MissionState::Returning:
+    case MissionState::Completed:
+      return 5;
+    case MissionState::Error:
+      return has_published_drone_state_ ? last_drone_state_ : 0;
+  }
+  return 0;
+}
+
+void RouteTargetPublisherNode::publishDroneStateIfReady(bool force)
+{
+  if (!drone_state_enabled_) {
+    return;
+  }
+  const uint8_t drone_state = desiredDroneState();
+  if (drone_state < 1 || drone_state > 5) {
+    return;
+  }
+  if (!force && has_published_drone_state_ && drone_state == last_drone_state_) {
+    return;
+  }
+
+  std_msgs::msg::UInt8 msg;
+  msg.data = drone_state;
+  drone_state_pub_->publish(msg);
+  last_drone_state_ = drone_state;
+  has_published_drone_state_ = true;
+  RCLCPP_INFO(
+    get_logger(), "Published /drone_state=%u.",
+    static_cast<unsigned>(drone_state));
 }
 
 const char * RouteTargetPublisherNode::stateName(MissionState state)

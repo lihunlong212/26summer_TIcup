@@ -1,6 +1,6 @@
 # 26summer TI Cup D 题飞行工作区
 
-本工程实现单架无人机的两套任务：跟随小车缓降投放，以及跟随小车动态降落。飞行闭环运行在 ROS Domain 1，飞行模式可由本地STM32串口或Domain 10的`/fly_choice`选择。收到合法模式前只进行雷达建图，不计算或发送目标速度。
+本工程实现单架无人机的两套任务：跟随小车缓降投放，以及跟随小车动态降落。飞行闭环运行在 ROS Domain 1，飞行模式可由本地STM32串口或可配置远端域（默认Domain 42）的`/fly_choice`选择。建图得到定位后立即向STM32发送实际速度；收到合法模式后才计算并发送目标速度。
 
 详细接口、配置和启动方法见 [`src/README.md`](src/README.md)。
 
@@ -12,6 +12,6 @@ colcon build --symlink-install
 source install/setup.bash
 
 ROS_DOMAIN_ID=1 ros2 launch my_launch flight.launch.py
-ROS_DOMAIN_ID=10 ros2 run domain_bridge_pkg domain_bridge --ros-args \
-  -p local_domain_id:=1
+ros2 run domain_bridge_pkg domain_bridge --ros-args --params-file \
+  ~/26summer_TIcup/install/my_launch/share/my_launch/config/flight.yaml
 ```

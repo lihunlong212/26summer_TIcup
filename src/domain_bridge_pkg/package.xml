@@ -2,7 +2,7 @@
 <package format="3">
   <name>domain_bridge_pkg</name>
   <version>0.1.0</version>
-  <description>Bridges D-task flight choice and aircraft telemetry across ROS domains.</description>
+  <description>Bridges flight choice and aircraft telemetry across configurable ROS domains.</description>
   <maintainer email="orangepi@todo.todo">orangepi</maintainer>
   <license>Apache-2.0</license>
 

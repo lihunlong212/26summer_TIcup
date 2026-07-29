@@ -62,21 +62,27 @@ public:
   void publishCommon(
     bool publish_fine,
     bool motion_hold = false,
-    bool publish_choice = true)
+    bool publish_choice = true,
+    bool publish_height = true,
+    bool publish_tf = true)
   {
-    geometry_msgs::msg::TransformStamped transform;
-    transform.header.stamp = now();
-    transform.header.frame_id = "map";
-    transform.child_frame_id = "laser_link";
-    transform.transform.rotation.w = 1.0;
-    tf_broadcaster->sendTransform(transform);
+    if (publish_tf) {
+      geometry_msgs::msg::TransformStamped transform;
+      transform.header.stamp = now();
+      transform.header.frame_id = "map";
+      transform.child_frame_id = "laser_link";
+      transform.transform.rotation.w = 1.0;
+      tf_broadcaster->sendTransform(transform);
+    }
 
     std_msgs::msg::Float32MultiArray target;
     target.data = {0.0F, 0.0F, 0.0F, 0.0F};
     target_pub->publish(target);
-    std_msgs::msg::Int16 height;
-    height.data = 150;
-    height_pub->publish(height);
+    if (publish_height) {
+      std_msgs::msg::Int16 height;
+      height.data = 150;
+      height_pub->publish(height);
+    }
     publishBool(visual_pub, true);
     publishBool(hold_pub, motion_hold);
     publishBool(descent_pub, true);
@@ -137,7 +143,11 @@ protected:
     controller = std::make_shared<pid_control_pkg::PositionPIDController>();
     executor.add_node(probe);
     executor.add_node(controller);
-    pump(100ms, false, false);
+    const auto deadline = std::chrono::steady_clock::now() + 100ms;
+    while (std::chrono::steady_clock::now() < deadline) {
+      executor.spin_some();
+      std::this_thread::sleep_for(10ms);
+    }
     probe->velocities.clear();
   }
 
@@ -226,8 +236,38 @@ TEST_F(VisualDescentTest, RemainsSilentUntilFlyChoiceIsAccepted)
       1s, true));
 }
 
+TEST_F(VisualDescentTest, RemainsSilentUntilHeightAndTfEnableValidPidCycle)
+{
+  const auto no_height_deadline = std::chrono::steady_clock::now() + 250ms;
+  while (std::chrono::steady_clock::now() < no_height_deadline) {
+    probe->publishCommon(true, false, true, false, false);
+    executor.spin_some();
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_TRUE(probe->velocities.empty());
+
+  const auto no_tf_deadline = std::chrono::steady_clock::now() + 250ms;
+  while (std::chrono::steady_clock::now() < no_tf_deadline) {
+    probe->publishCommon(true, false, true, true, false);
+    executor.spin_some();
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_TRUE(probe->velocities.empty());
+
+  ASSERT_TRUE(waitForVelocity(
+      [](const std::vector<float> & velocity) {
+        return velocity.size() == 4;
+      },
+      1s, true));
+}
+
 TEST_F(VisualDescentTest, MotionHoldContinuouslyPublishesExactZero)
 {
+  ASSERT_TRUE(waitForVelocity(
+      [](const std::vector<float> & velocity) {
+        return velocity.size() == 4;
+      },
+      1s, true));
   probe->velocities.clear();
   const auto deadline = std::chrono::steady_clock::now() + 250ms;
   while (std::chrono::steady_clock::now() < deadline) {

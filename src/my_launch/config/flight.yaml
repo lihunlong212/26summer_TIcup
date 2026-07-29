@@ -1,6 +1,21 @@
 # D题飞行控制参数。雷达、相机和串口等硬件参数使用各自驱动的默认值，
 # 不要把硬件驱动参数放进这个文件。
 
+domain_bridge:
+  ros__parameters:
+    # 飞行闭环所在的本地ROS域。
+    local_domain_id: 1
+    # 对外发送坐标、状态并接收任务选择的ROS域。
+    remote_domain_id: 42
+    # Domain 42发布本机坐标的话题，类型Float32MultiArray：[x_cm, y_cm]。
+    coordinate_topic: "/drone_position"
+    # Domain 42接收任务选择的话题，1=投放，2=降落。
+    fly_choice_topic: "/fly_choice"
+    # Domain 42发布飞行阶段的话题，类型UInt8，只使用1~5。
+    drone_state_topic: "/drone_state"
+    # 坐标和飞行阶段的持续发布频率，单位Hz。
+    publish_frequency_hz: 10.0
+
 height_source_mux:
   ros__parameters:
     # 飞行高度来源：
@@ -57,12 +72,14 @@ route_target_publisher:
     drop_alignment_height_cm: 55.0
     drop_alignment_tolerance_px: 100.0
     drop_alignment_required_frames: 3
-    # 降落任务发现Tag后直接把高度目标设为40cm，到达后发送停机指令。
-    landing_trigger_height_cm: 40.0
+    # 降落任务发现Tag后直接把高度目标设为45cm，到达后发送停机指令。
+    landing_trigger_height_cm: 45.0
     # 降落停机后保持全零速度5秒，再发送重新起飞指令。
     landed_hold_sec: 5.0
     # 完成投放或重新起飞后的原地爬升高度。
     return_height_cm: 150.0
+    # 发现Tag后，低于该高度才从伴飞状态2切换为投放3或降落4。
+    drone_state_action_height_cm: 80.0
 
     # 每个航点严格使用"(x_cm y_cm z_cm yaw_deg)"格式。
     # 前normal_count个是普通航点，后面的全部是连续搜索航点。

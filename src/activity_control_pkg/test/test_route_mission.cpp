@@ -18,7 +18,6 @@
 #include <std_msgs/msg/int16.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/int32_multi_array.hpp>
-#include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/u_int8.hpp>
 #include <std_msgs/msg/u_int8_multi_array.hpp>
 #include <tf2_ros/transform_broadcaster.h>
@@ -45,7 +44,9 @@ public:
     pose_yaw_deg(0.0),
     height_cm(150),
     waypoint_index(-2),
-    visual_active(false)
+    visual_active(false),
+    has_drone_state(false),
+    drone_state(0)
   {
     tf_stamp = now();
     choice_pub = create_publisher<std_msgs::msg::UInt8>("/fly_choice", 10);
@@ -54,11 +55,16 @@ public:
     serial_result_pub =
       create_publisher<std_msgs::msg::UInt8MultiArray>(
       "/serial_byte_command_result", 10);
+    target_velocity_pub =
+      create_publisher<std_msgs::msg::Float32MultiArray>(
+      "/target_velocity", 10);
 
-    state_sub = create_subscription<std_msgs::msg::String>(
-      "/mission_state", durableQos(),
-      [this](const std_msgs::msg::String::SharedPtr msg) {
-        mission_state = msg->data;
+    drone_state_sub = create_subscription<std_msgs::msg::UInt8>(
+      "/drone_state", durableQos(),
+      [this](const std_msgs::msg::UInt8::SharedPtr msg) {
+        has_drone_state = true;
+        drone_state = msg->data;
+        drone_states.push_back(msg->data);
       });
     waypoint_sub = create_subscription<std_msgs::msg::Int32>(
       "/current_waypoint_index", durableQos(),
@@ -120,6 +126,13 @@ public:
     fine_pub->publish(msg);
   }
 
+  void publishTargetVelocity()
+  {
+    std_msgs::msg::Float32MultiArray msg;
+    msg.data = {1.0F, 0.0F, 1.0F, 0.0F};
+    target_velocity_pub->publish(msg);
+  }
+
   void publishSerialResult(uint8_t frame_id, uint8_t value)
   {
     std_msgs::msg::UInt8MultiArray msg;
@@ -138,9 +151,11 @@ public:
   double pose_y_m;
   double pose_yaw_deg;
   int16_t height_cm;
-  std::string mission_state;
   int32_t waypoint_index;
   bool visual_active;
+  bool has_drone_state;
+  uint8_t drone_state;
+  std::vector<uint8_t> drone_states;
   std::vector<float> target;
   std::vector<std::pair<uint8_t, uint8_t>> serial_commands;
 
@@ -150,7 +165,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::Int16>::SharedPtr height_pub;
   rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr fine_pub;
   rclcpp::Publisher<std_msgs::msg::UInt8MultiArray>::SharedPtr serial_result_pub;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr state_sub;
+  rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr target_velocity_pub;
+  rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr drone_state_sub;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr waypoint_sub;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr visual_sub;
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr target_sub;
@@ -193,6 +209,7 @@ protected:
     options.append_parameter_override("landing_trigger_height_cm", 45.0);
     options.append_parameter_override("landed_hold_sec", 0.2);
     options.append_parameter_override("return_height_cm", 150.0);
+    options.append_parameter_override("drone_state_action_height_cm", 80.0);
     return options;
   }
 
@@ -270,15 +287,21 @@ protected:
 TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
 {
   makeSystem(routeOptions());
-  ASSERT_EQ(probe->mission_state, "WAITING_ROUTE");
+  ASSERT_FALSE(probe->has_drone_state);
+  EXPECT_TRUE(probe->get_publishers_info_by_topic("/mission_state").empty());
 
   probe->publishChoice(9);
   pump(100ms);
-  EXPECT_EQ(probe->mission_state, "WAITING_ROUTE");
+  EXPECT_FALSE(probe->has_drone_state);
 
   ASSERT_TRUE(waitFor(
-      [this]() {return probe->mission_state == "NAVIGATING";}, 1s,
-      [this]() {probe->publishChoice(1);}));
+      [this]() {
+        return probe->has_drone_state && probe->drone_state == 1;
+      }, 1s,
+      [this]() {
+        probe->publishChoice(1);
+        probe->publishTargetVelocity();
+      }));
 
   pump(300ms, [this]() {probe->publishFine();});
   EXPECT_EQ(probe->waypoint_index, 0);
@@ -288,7 +311,7 @@ TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
   ASSERT_TRUE(waitFor(
       [this]() {return probe->waypoint_index == 1;}, 1s));
   pump(300ms);
-  EXPECT_EQ(probe->mission_state, "NAVIGATING");
+  EXPECT_EQ(probe->drone_state, 2);
   EXPECT_FALSE(probe->visual_active);
 
   probe->pose_x_m = -0.32;
@@ -297,15 +320,23 @@ TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
       [this]() {return probe->waypoint_index == 2;}, 1s));
 
   ASSERT_TRUE(waitFor(
-      [this]() {return probe->mission_state == "FOLLOW_DROP";}, 1s,
+      [this]() {return probe->visual_active;}, 1s,
       [this]() {probe->publishFine();}));
   EXPECT_TRUE(probe->visual_active);
+  EXPECT_EQ(probe->drone_state, 2);
   ASSERT_GE(probe->target.size(), 4U);
   EXPECT_FLOAT_EQ(probe->target[2], 55.0F);
 
   probe->pose_x_m = 0.44;
   probe->pose_y_m = -0.22;
   probe->pose_yaw_deg = 15.0;
+  probe->height_cm = 80;
+  pump(100ms, [this]() {probe->publishFine();});
+  EXPECT_EQ(probe->drone_state, 2);
+  probe->height_cm = 79;
+  ASSERT_TRUE(waitFor(
+      [this]() {return probe->drone_state == 3;}, 1s,
+      [this]() {probe->publishFine();}));
   probe->height_cm = 55;
 
   // Two aligned frames are insufficient.
@@ -341,7 +372,7 @@ TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
 
   probe->publishSerialResult(0x11, 0x01);
   ASSERT_TRUE(waitFor(
-      [this]() {return probe->mission_state == "RETURNING";}, 1s));
+      [this]() {return probe->drone_state == 5;}, 1s));
   expectTarget(44.0, -22.0, 150.0, 15.0);
   pump(200ms, [this]() {probe->publishFine();});
   EXPECT_FALSE(probe->visual_active);
@@ -364,31 +395,47 @@ TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
                std::fabs(probe->target[2]) < 0.6;
       }, 1s));
   expectTarget(0.0, 0.0, 0.0, 0.0);
+  EXPECT_EQ(
+    std::count(probe->drone_states.begin(), probe->drone_states.end(), 0), 0);
 }
 
 TEST_F(RouteMissionTest, LandingTriggerHoldTakeoffAndReturn)
 {
   makeSystem(routeOptions());
   ASSERT_TRUE(waitFor(
-      [this]() {return probe->mission_state == "NAVIGATING";}, 1s,
-      [this]() {probe->publishChoice(2);}));
+      [this]() {
+        return probe->has_drone_state && probe->drone_state == 1;
+      }, 1s,
+      [this]() {
+        probe->publishChoice(2);
+        probe->publishTargetVelocity();
+      }));
 
   probe->pose_x_m = 0.0;
   ASSERT_TRUE(waitFor(
       [this]() {return probe->waypoint_index == 1;}, 1s));
   ASSERT_TRUE(waitFor(
-      [this]() {return probe->mission_state == "FOLLOW_LAND";}, 1s,
+      [this]() {return probe->visual_active;}, 1s,
       [this]() {probe->publishFine();}));
   ASSERT_GE(probe->target.size(), 4U);
   EXPECT_FLOAT_EQ(probe->target[2], 45.0F);
+  EXPECT_EQ(probe->drone_state, 2);
 
   probe->pose_x_m = 0.12;
   probe->pose_y_m = 0.34;
   probe->pose_yaw_deg = 20.0;
+  probe->height_cm = 80;
+  pump(100ms, [this]() {probe->publishFine();});
+  EXPECT_EQ(probe->drone_state, 2);
+  probe->height_cm = 79;
+  ASSERT_TRUE(waitFor(
+      [this]() {return probe->drone_state == 4;}, 1s,
+      [this]() {probe->publishFine();}));
   probe->height_cm = 45;
   ASSERT_TRUE(waitFor(
       [this]() {return probe->commandCount(0x44, 0x01) == 1;}, 1s,
       [this]() {probe->publishFine();}));
+  EXPECT_EQ(probe->drone_state, 4);
   pump(200ms, [this]() {probe->publishFine();});
   EXPECT_EQ(probe->commandCount(0x44, 0x01), 1U);
   EXPECT_FALSE(probe->visual_active);
@@ -404,10 +451,45 @@ TEST_F(RouteMissionTest, LandingTriggerHoldTakeoffAndReturn)
   probe->pose_yaw_deg = 30.0;
   probe->publishSerialResult(0x44, 0x00);
   ASSERT_TRUE(waitFor(
-      [this]() {return probe->mission_state == "RETURNING";}, 1s));
+      [this]() {
+        return probe->drone_state == 5 &&
+               probe->target.size() >= 4 &&
+               std::fabs(probe->target[0] - 56.0F) < 0.6F &&
+               std::fabs(probe->target[1] - 78.0F) < 0.6F &&
+               std::fabs(probe->target[2] - 150.0F) < 0.6F;
+      }, 1s));
   expectTarget(56.0, 78.0, 150.0, 30.0);
   pump(200ms, [this]() {probe->publishFine();});
   EXPECT_FALSE(probe->visual_active);
+  EXPECT_EQ(
+    std::count(probe->drone_states.begin(), probe->drone_states.end(), 0), 0);
+}
+
+TEST_F(RouteMissionTest, SearchWithoutTagEntersReturnStateFive)
+{
+  auto options = routeOptions();
+  options.append_parameter_override(
+    "route_drop_waypoints",
+    std::vector<std::string>{"(0 0 150 0)", "(-32 65 150 0)"});
+  makeSystem(options);
+
+  ASSERT_TRUE(waitFor(
+      [this]() {
+        return probe->has_drone_state && probe->drone_state == 1;
+      }, 1s,
+      [this]() {
+        probe->publishChoice(1);
+        probe->publishTargetVelocity();
+      }));
+  probe->pose_x_m = 0.0;
+  ASSERT_TRUE(waitFor(
+      [this]() {return probe->drone_state == 2;}, 1s));
+
+  probe->pose_x_m = -0.32;
+  probe->pose_y_m = 0.65;
+  ASSERT_TRUE(waitFor(
+      [this]() {return probe->drone_state == 5;}, 1s));
+  expectTarget(0.0, 0.0, 150.0, 0.0);
 }
 
 TEST_F(RouteMissionTest, InvalidTupleRejectsMission)
@@ -417,8 +499,11 @@ TEST_F(RouteMissionTest, InvalidTupleRejectsMission)
     "route_drop_waypoints",
     std::vector<std::string>{"(0 0 150)", "(1 2 3 4)"});
   makeSystem(options);
-  pump(300ms, [this]() {probe->publishChoice(1);});
-  EXPECT_EQ(probe->mission_state, "WAITING_ROUTE");
+  pump(300ms, [this]() {
+      probe->publishChoice(1);
+      probe->publishTargetVelocity();
+    });
+  EXPECT_FALSE(probe->has_drone_state);
 }
 
 TEST_F(RouteMissionTest, InvalidNormalCountRejectsMission)
@@ -429,8 +514,11 @@ TEST_F(RouteMissionTest, InvalidNormalCountRejectsMission)
     std::vector<std::string>{"(0 0 150 0)"});
   options.append_parameter_override("route_drop_normal_count", 1);
   makeSystem(options);
-  pump(300ms, [this]() {probe->publishChoice(1);});
-  EXPECT_EQ(probe->mission_state, "WAITING_ROUTE");
+  pump(300ms, [this]() {
+      probe->publishChoice(1);
+      probe->publishTargetVelocity();
+    });
+  EXPECT_FALSE(probe->has_drone_state);
 }
 
 }  // namespace

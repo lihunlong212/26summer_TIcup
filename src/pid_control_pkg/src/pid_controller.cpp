@@ -153,6 +153,7 @@ PositionPIDController::PositionPIDController()
   error_z_cm_(0.0),
   visual_takeover_active_(false),
   flight_control_enabled_(false),
+  has_completed_valid_control_cycle_(false),
   motion_hold_active_(true),
   visual_descent_active_(false),
   visual_descent_max_velocity_cm_s_(20.0),
@@ -431,14 +432,25 @@ void PositionPIDController::controlTimerCallback()
     last_update_time_ = now_time;
     return;
   }
+  if (!has_target_position_ || !has_target_height_) {
+    last_update_time_ = now_time;
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "Waiting for target position and height; target velocity remains silent.");
+    return;
+  }
   if (motion_hold_active_) {
-    publishZeroVelocity();
+    if (has_completed_valid_control_cycle_) {
+      publishZeroVelocity();
+    }
     last_update_time_ = now_time;
     return;
   }
 
   if (visual_takeover_active_ && !hasFreshVisualData(now_time)) {
-    publishZeroVelocity();
+    if (has_completed_valid_control_cycle_) {
+      publishZeroVelocity();
+    }
     last_update_time_ = now_time;
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 1000,
@@ -446,15 +458,10 @@ void PositionPIDController::controlTimerCallback()
     return;
   }
 
-  if (!has_target_position_) {
-    RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), 2000,
-      "Waiting for /target_position. Check that route_target_publisher is running and publishing.");
-    return;
-  }
-
   if (!getCurrentPose()) {
-    publishZeroVelocity();
+    if (has_completed_valid_control_cycle_) {
+      publishZeroVelocity();
+    }
     last_update_time_ = now_time;
     return;
   }
@@ -467,6 +474,12 @@ void PositionPIDController::controlTimerCallback()
 
   auto cmd_vel = processPID(dt);
   target_velocity_pub_->publish(cmd_vel);
+  if (!has_completed_valid_control_cycle_) {
+    has_completed_valid_control_cycle_ = true;
+    RCLCPP_INFO(
+      get_logger(),
+      "First valid PID target velocity calculated and published.");
+  }
 
   if (visual_takeover_active_) {
     RCLCPP_DEBUG(

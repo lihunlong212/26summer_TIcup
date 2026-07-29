@@ -13,7 +13,6 @@
 #include <std_msgs/msg/int16.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/int32_multi_array.hpp>
-#include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/u_int8.hpp>
 #include <std_msgs/msg/u_int8_multi_array.hpp>
 #include <tf2_ros/buffer.h>
@@ -64,6 +63,8 @@ private:
   void flyChoiceCallback(const std_msgs::msg::UInt8::SharedPtr msg);
   void heightCallback(const std_msgs::msg::Int16::SharedPtr msg);
   void fineDataCallback(const std_msgs::msg::Int32MultiArray::SharedPtr msg);
+  void targetVelocityCallback(
+    const std_msgs::msg::Float32MultiArray::SharedPtr msg);
   void serialCommandResultCallback(
     const std_msgs::msg::UInt8MultiArray::SharedPtr msg);
   void monitorTimerCallback();
@@ -85,15 +86,16 @@ private:
 
   void publishCurrentTarget();
   void publishTarget(const Target & target);
-  void publishMissionState();
   void publishVisualState(bool active);
   void publishMotionHold(bool active);
   void publishVisualDescentState(bool active);
   void publishVisionFresh(bool fresh);
+  void publishDroneStateIfReady(bool force = false);
   void publishCurrentWaypointIndex();
   void publishSerialByteCommand(uint8_t frame_id, uint8_t value);
   void setState(MissionState state);
 
+  uint8_t desiredDroneState() const;
   static const char * stateName(MissionState state);
   static double normalizeAngleDeg(double angle_deg);
   static Target parseWaypoint(
@@ -104,7 +106,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr motion_hold_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr visual_descent_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr vision_fresh_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr mission_state_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr drone_state_pub_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr waypoint_index_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr fly_choice_status_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8MultiArray>::SharedPtr serial_command_pub_;
@@ -112,6 +114,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr fly_choice_sub_;
   rclcpp::Subscription<std_msgs::msg::Int16>::SharedPtr height_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr fine_data_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr
+    target_velocity_sub_;
   rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr
     serial_command_result_sub_;
   rclcpp::TimerBase::SharedPtr monitor_timer_;
@@ -131,6 +135,7 @@ private:
   double landed_hold_sec_;
   double landing_trigger_height_cm_;
   double return_height_cm_;
+  double drone_state_action_height_cm_;
 
   std::vector<Target> targets_;
   std::size_t current_index_;
@@ -153,6 +158,9 @@ private:
   bool motion_hold_active_;
   bool visual_descent_active_;
   bool last_vision_fresh_;
+  bool drone_state_enabled_;
+  bool has_published_drone_state_;
+  uint8_t last_drone_state_;
 };
 
 }  // namespace activity_control_pkg

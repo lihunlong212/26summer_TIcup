@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer="orangepi",
     maintainer_email="orangepi@todo.todo",
-    description="ROS Domain 10 to Domain 1 flight choice and telemetry bridge.",
+    description="Configurable cross-domain flight choice and telemetry bridge.",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
