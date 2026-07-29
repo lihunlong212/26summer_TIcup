@@ -1,13 +1,13 @@
 // 面阵激光 —— 抗高台突变的地面高度估计节点
 //
 // 与 laser_array_driver.cpp 完全解耦：自带串口解析，只是在
-// 64 束有效距离上跑空间 + 时间滤波，输出真正的"离地高度"，
+// 16 束有效距离上跑空间 + 时间滤波，输出真正的"离地高度"，
 // 同时提供障碍检测和障碍高度供搬运/避障逻辑使用。
 //
 // 发布的话题：
-//   /height                       (Int16, 单位: cm)    64 束最大有效距离，兼容控制链路
+//   /height_laser_array           (Int16, 单位: cm)    16 束最大有效距离，供高度选择器使用
 //   /laser_array/ground_height    (Float32, 单位: m)   给飞控的稳定高度
-//   /laser_array/min_range        (Float32, 单位: m)   64 束中最小值（可能打到障碍/高台顶）
+//   /laser_array/min_range        (Float32, 单位: m)   16 束中最小值（可能打到障碍/高台顶）
 //   /laser_array/obstacle_below   (Bool)               下方是否有明显低于地面的物体
 //   /laser_array/obstacle_height  (Float32, 单位: m)   障碍物相对地面的高度，无障碍时为 0
 //   /laser_array/raw_percentile   (Float32)            滤波前的原始分位值（调参观察用）
@@ -51,7 +51,8 @@ constexpr std::size_t COUNT_SIZE = 1;
 constexpr std::size_t DATA_UNIT_SIZE = 6;
 constexpr std::size_t FOOTER_SIZE = 6;
 constexpr std::size_t CHECKSUM_SIZE = 1;
-constexpr std::uint8_t DATA_COUNT = 64;
+// 当前硬件输出4x4共16点：帧内count=0x10，整帧112字节。
+constexpr std::uint8_t DATA_COUNT = 16;
 constexpr std::size_t PACKET_SIZE =
   HEADER_SIZE + TIMESTAMP_SIZE + COUNT_SIZE +
   DATA_COUNT * DATA_UNIT_SIZE + FOOTER_SIZE + CHECKSUM_SIZE;
@@ -91,8 +92,8 @@ class GroundHeightNode : public rclcpp::Node {
     // --- 几何化障碍测高 ---
     declare_parameter<bool>("geometry_obstacle_enabled", true);
     declare_parameter<bool>("use_geometry_for_ground_height", false);
-    declare_parameter<int>("beam_rows", 8);
-    declare_parameter<int>("beam_cols", 8);
+    declare_parameter<int>("beam_rows", 4);
+    declare_parameter<int>("beam_cols", 4);
     declare_parameter<double>("beam_horizontal_fov_deg", 45.0);
     declare_parameter<double>("beam_vertical_fov_deg", 45.0);
     declare_parameter<bool>("flip_rows", false);
@@ -287,8 +288,8 @@ class GroundHeightNode : public rclcpp::Node {
   double obstacle_height_bias_cm_{0.0};
   bool geometry_obstacle_enabled_{true};
   bool use_geometry_for_ground_height_{false};
-  int beam_rows_{8};
-  int beam_cols_{8};
+  int beam_rows_{4};
+  int beam_cols_{4};
   double beam_horizontal_fov_deg_{45.0};
   double beam_vertical_fov_deg_{45.0};
   bool flip_rows_{false};
@@ -516,10 +517,10 @@ class GroundHeightNode : public rclcpp::Node {
     if (beam_rows_ * beam_cols_ != static_cast<int>(protocol::DATA_COUNT)) {
       RCLCPP_WARN(
         get_logger(),
-        "beam_rows*beam_cols=%d does not match %u samples, falling back to 8x8.",
+        "beam_rows*beam_cols=%d does not match %u samples, falling back to 4x4.",
         beam_rows_ * beam_cols_, protocol::DATA_COUNT);
-      beam_rows_ = 8;
-      beam_cols_ = 8;
+      beam_rows_ = 4;
+      beam_cols_ = 4;
     }
 
     beam_directions_.clear();

@@ -4,7 +4,7 @@
 height_source_mux:
   ros__parameters:
     # 飞行高度来源：
-    # laser_array = 使用8x8面阵激光中的最大有效高度；
+    # laser_array = 使用4x4面阵激光16束中的最大有效高度；
     # stm32 = 使用STM32的0x05高度帧。
     height_source: "laser_array"
 

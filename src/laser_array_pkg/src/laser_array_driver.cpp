@@ -26,7 +26,8 @@ namespace protocol {
     constexpr std::size_t DATA_UNIT_SIZE = 6;
     constexpr std::size_t FOOTER_SIZE = 6;
     constexpr std::size_t CHECKSUM_SIZE = 1;
-    constexpr std::uint8_t DATA_COUNT = 64;  // 当前设备固定64个数据点
+    // 当前硬件输出4x4共16点：帧内count=0x10，整帧112字节。
+    constexpr std::uint8_t DATA_COUNT = 16;
     constexpr std::size_t PACKET_SIZE =
         HEADER_SIZE + TIMESTAMP_SIZE + COUNT_SIZE +
         DATA_COUNT * DATA_UNIT_SIZE + FOOTER_SIZE + CHECKSUM_SIZE;
