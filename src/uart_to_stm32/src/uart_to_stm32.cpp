@@ -38,11 +38,19 @@ bool UartToStm32::initialize(
     node_->create_subscription<std_msgs::msg::UInt8MultiArray>(
     "/serial_byte_command", 10,
     std::bind(&UartToStm32::serialByteCommandCallback, this, std::placeholders::_1));
+  const auto accepted_choice_qos =
+    rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable();
+  fly_choice_status_sub_ =
+    node_->create_subscription<std_msgs::msg::UInt8>(
+    "/fly_choice_status", accepted_choice_qos,
+    std::bind(&UartToStm32::flyChoiceStatusCallback, this, std::placeholders::_1));
   const auto height_topic = node_->declare_parameter<std::string>(
     "height_topic", "/height_stm32");
   height_pub_ = node_->create_publisher<std_msgs::msg::Int16>(height_topic, 10);
   is_st_ready_pub_ = node_->create_publisher<std_msgs::msg::UInt8>(
     "/is_st_ready", rclcpp::QoS(1).transient_local().reliable());
+  fly_choice_pub_ =
+    node_->create_publisher<std_msgs::msg::UInt8>("/fly_choice", rclcpp::QoS(10).reliable());
   serial_byte_command_result_pub_ =
     node_->create_publisher<std_msgs::msg::UInt8MultiArray>(
     "/serial_byte_command_result", 10);
@@ -57,14 +65,24 @@ bool UartToStm32::initialize(
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "STM32 bridge ready on %s at %u baud; frame 0x05 publishes %s in cm.",
+    "STM32 bridge ready on %s at %u baud; frame 0x05 publishes %s in cm; "
+    "frame 0x11 publishes /fly_choice.",
     serial_port.c_str(), baud_rate, height_topic.c_str());
+  RCLCPP_INFO(
+    node_->get_logger(),
+    "Target-velocity serial output is locked until /fly_choice_status accepts mode 1 or 2.");
   return true;
 }
 
 void UartToStm32::targetVelocityCallback(
   const std_msgs::msg::Float32MultiArray::SharedPtr msg)
 {
+  if (!velocity_output_enabled_.load()) {
+    RCLCPP_DEBUG_THROTTLE(
+      node_->get_logger(), *node_->get_clock(), 5000,
+      "Ignoring /target_velocity until a fly choice has been accepted.");
+    return;
+  }
   if (msg->data.size() < 4) {
     RCLCPP_WARN(
       node_->get_logger(),
@@ -87,6 +105,24 @@ void UartToStm32::serialByteCommandCallback(
   const uint8_t frame_id = msg->data[0];
   const uint8_t value = msg->data[1];
   publishByteFrameResult(frame_id, value, sendByteFrame(frame_id, value));
+}
+
+void UartToStm32::flyChoiceStatusCallback(
+  const std_msgs::msg::UInt8::SharedPtr msg)
+{
+  if (msg->data != 1 && msg->data != 2) {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "Ignoring invalid /fly_choice_status=%u; velocity output remains locked.",
+      static_cast<unsigned>(msg->data));
+    return;
+  }
+  if (!velocity_output_enabled_.exchange(true)) {
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Fly choice %u accepted; target-velocity serial output is now enabled.",
+      static_cast<unsigned>(msg->data));
+  }
 }
 
 void UartToStm32::sendTargetVelocityToSerial(
@@ -159,6 +195,31 @@ void UartToStm32::publishByteFrameResult(
 void UartToStm32::protocolDataHandler(
   uint8_t id, const std::vector<uint8_t> & data)
 {
+  if (id == FLY_CHOICE_FRAME_ID) {
+    if (data.size() != 1) {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "Fly-choice frame 0x11 must contain exactly 1 byte; received %zu.",
+        data.size());
+      return;
+    }
+    if (data[0] != 1 && data[0] != 2) {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "Ignoring invalid STM32 fly choice %u; valid values are 1 and 2.",
+        static_cast<unsigned>(data[0]));
+      return;
+    }
+    std_msgs::msg::UInt8 msg;
+    msg.data = data[0];
+    fly_choice_pub_->publish(msg);
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Published STM32 fly choice %u to local /fly_choice.",
+      static_cast<unsigned>(msg.data));
+    return;
+  }
+
   if (id == HEIGHT_FRAME_ID) {
     if (data.size() < 2) {
       RCLCPP_WARN(node_->get_logger(), "Height frame 0x05 is shorter than 2 bytes.");

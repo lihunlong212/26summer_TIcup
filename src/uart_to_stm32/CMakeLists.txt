@@ -33,6 +33,29 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  find_library(UTIL_LIBRARY util REQUIRED)
+  ament_add_gtest(test_fly_choice_serial
+    test/test_fly_choice_serial.cpp
+    src/uart_to_stm32.cpp
+  )
+  target_include_directories(test_fly_choice_serial PRIVATE
+    include
+  )
+  ament_target_dependencies(test_fly_choice_serial
+    rclcpp
+    std_msgs
+    serial_comm
+  )
+  target_link_libraries(test_fly_choice_serial
+    ${UTIL_LIBRARY}
+  )
+  set_tests_properties(test_fly_choice_serial PROPERTIES
+    ENVIRONMENT "ROS_DOMAIN_ID=85"
+  )
+endif()
+
 ament_export_include_directories(include)
 ament_export_dependencies(
   rclcpp

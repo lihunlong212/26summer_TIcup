@@ -14,6 +14,7 @@
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/int16.hpp>
 #include <std_msgs/msg/int32_multi_array.hpp>
+#include <std_msgs/msg/u_int8.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
 #include "pid_control_pkg/pid_controller.hpp"
@@ -46,6 +47,9 @@ public:
     descent_pub =
       create_publisher<std_msgs::msg::Bool>(
       "/visual_descent_active", durableQos());
+    choice_status_pub =
+      create_publisher<std_msgs::msg::UInt8>(
+      "/fly_choice_status", durableQos());
     fine_pub = create_publisher<std_msgs::msg::Int32MultiArray>("/fine_data", 10);
     velocity_sub = create_subscription<std_msgs::msg::Float32MultiArray>(
       "/target_velocity", 10,
@@ -55,7 +59,10 @@ public:
     tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
   }
 
-  void publishCommon(bool publish_fine, bool motion_hold = false)
+  void publishCommon(
+    bool publish_fine,
+    bool motion_hold = false,
+    bool publish_choice = true)
   {
     geometry_msgs::msg::TransformStamped transform;
     transform.header.stamp = now();
@@ -73,6 +80,11 @@ public:
     publishBool(visual_pub, true);
     publishBool(hold_pub, motion_hold);
     publishBool(descent_pub, true);
+    if (publish_choice) {
+      std_msgs::msg::UInt8 choice;
+      choice.data = 1;
+      choice_status_pub->publish(choice);
+    }
 
     if (publish_fine) {
       std_msgs::msg::Int32MultiArray fine;
@@ -98,6 +110,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr visual_pub;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr hold_pub;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr descent_pub;
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr choice_status_pub;
   rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr fine_pub;
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr velocity_sub;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
@@ -124,7 +137,8 @@ protected:
     controller = std::make_shared<pid_control_pkg::PositionPIDController>();
     executor.add_node(probe);
     executor.add_node(controller);
-    pump(300ms, true);
+    pump(100ms, false, false);
+    probe->velocities.clear();
   }
 
   void TearDown() override
@@ -135,11 +149,14 @@ protected:
     probe.reset();
   }
 
-  void pump(std::chrono::milliseconds duration, bool publish_fine)
+  void pump(
+    std::chrono::milliseconds duration,
+    bool publish_fine,
+    bool publish_choice = true)
   {
     const auto deadline = std::chrono::steady_clock::now() + duration;
     while (std::chrono::steady_clock::now() < deadline) {
-      probe->publishCommon(publish_fine);
+      probe->publishCommon(publish_fine, false, publish_choice);
       executor.spin_some();
       std::this_thread::sleep_for(10ms);
     }
@@ -194,6 +211,19 @@ TEST_F(VisualDescentTest, LimitsDescentAndForcesExactZeroWhenVisionIsStale)
           [](float value) {return std::fabs(value) < 1e-6F;});
       },
       1s, false));
+}
+
+TEST_F(VisualDescentTest, RemainsSilentUntilFlyChoiceIsAccepted)
+{
+  pump(300ms, true, false);
+  EXPECT_TRUE(probe->velocities.empty());
+
+  ASSERT_TRUE(
+    waitForVelocity(
+      [](const std::vector<float> & velocity) {
+        return velocity.size() == 4;
+      },
+      1s, true));
 }
 
 TEST_F(VisualDescentTest, MotionHoldContinuouslyPublishesExactZero)

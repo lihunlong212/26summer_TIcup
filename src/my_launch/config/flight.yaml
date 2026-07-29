@@ -57,8 +57,8 @@ route_target_publisher:
     drop_alignment_height_cm: 55.0
     drop_alignment_tolerance_px: 100.0
     drop_alignment_required_frames: 3
-    # 降落任务发现Tag后直接把高度目标设为45cm，到达后发送停机指令。
-    landing_trigger_height_cm: 45.0
+    # 降落任务发现Tag后直接把高度目标设为40cm，到达后发送停机指令。
+    landing_trigger_height_cm: 40.0
     # 降落停机后保持全零速度5秒，再发送重新起飞指令。
     landed_hold_sec: 5.0
     # 完成投放或重新起飞后的原地爬升高度。

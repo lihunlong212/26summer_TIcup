@@ -10,6 +10,7 @@
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/int16.hpp>
 #include <std_msgs/msg/int32_multi_array.hpp>
+#include <std_msgs/msg/u_int8.hpp>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/buffer.h>
@@ -69,6 +70,7 @@ private:
   void motionHoldCallback(const std_msgs::msg::Bool::SharedPtr msg);
   void visualDescentCallback(const std_msgs::msg::Bool::SharedPtr msg);
   void fineDataCallback(const std_msgs::msg::Int32MultiArray::SharedPtr msg);
+  void flyChoiceStatusCallback(const std_msgs::msg::UInt8::SharedPtr msg);
   void controlTimerCallback();
   void publishZeroVelocity();
   void resetControllers();
@@ -89,6 +91,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr motion_hold_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr visual_descent_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32MultiArray>::SharedPtr fine_data_sub_;
+  rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr fly_choice_status_sub_;
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr target_velocity_pub_;
   rclcpp::TimerBase::SharedPtr control_timer_;
 
@@ -138,6 +141,7 @@ private:
   double error_z_cm_;
 
   bool visual_takeover_active_;
+  bool flight_control_enabled_;
   bool motion_hold_active_;
   bool visual_descent_active_;
   double visual_descent_max_velocity_cm_s_;

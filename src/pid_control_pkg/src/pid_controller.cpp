@@ -152,6 +152,7 @@ PositionPIDController::PositionPIDController()
   error_yaw_deg_(0.0),
   error_z_cm_(0.0),
   visual_takeover_active_(false),
+  flight_control_enabled_(false),
   motion_hold_active_(true),
   visual_descent_active_(false),
   visual_descent_max_velocity_cm_s_(20.0),
@@ -187,6 +188,10 @@ PositionPIDController::PositionPIDController()
   fine_data_sub_ = create_subscription<std_msgs::msg::Int32MultiArray>(
     "/fine_data", rclcpp::QoS(10),
     std::bind(&PositionPIDController::fineDataCallback, this, std::placeholders::_1));
+  fly_choice_status_sub_ = create_subscription<std_msgs::msg::UInt8>(
+    "/fly_choice_status", takeover_qos,
+    std::bind(
+      &PositionPIDController::flyChoiceStatusCallback, this, std::placeholders::_1));
 
   target_velocity_pub_ = create_publisher<std_msgs::msg::Float32MultiArray>(
     "/target_velocity", rclcpp::QoS(10));
@@ -198,6 +203,9 @@ PositionPIDController::PositionPIDController()
 
   RCLCPP_INFO(get_logger(), "Position PID Controller initialized (%.1f Hz)", control_frequency_);
   RCLCPP_INFO(get_logger(), "Frames: map=%s, laser_link=%s", map_frame_.c_str(), laser_link_frame_.c_str());
+  RCLCPP_INFO(
+    get_logger(),
+    "Position PID and /target_velocity output are locked until /fly_choice_status accepts mode 1 or 2.");
 }
 
 void PositionPIDController::targetPositionCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
@@ -276,6 +284,27 @@ void PositionPIDController::fineDataCallback(const std_msgs::msg::Int32MultiArra
   visual_error_y_px_ = static_cast<double>(msg->data[1]);
   has_visual_fine_data_ = true;
   last_visual_data_time_ = now();
+}
+
+void PositionPIDController::flyChoiceStatusCallback(
+  const std_msgs::msg::UInt8::SharedPtr msg)
+{
+  if (msg->data != 1 && msg->data != 2) {
+    RCLCPP_WARN(
+      get_logger(),
+      "Ignoring invalid /fly_choice_status=%u; flight control remains locked.",
+      static_cast<unsigned>(msg->data));
+    return;
+  }
+  if (!flight_control_enabled_) {
+    flight_control_enabled_ = true;
+    resetControllers();
+    last_update_time_ = now();
+    RCLCPP_INFO(
+      get_logger(),
+      "Fly choice %u accepted; position PID and target-velocity output are now enabled.",
+      static_cast<unsigned>(msg->data));
+  }
 }
 
 bool PositionPIDController::getCurrentPose()
@@ -398,6 +427,10 @@ std_msgs::msg::Float32MultiArray PositionPIDController::processPID(double dt)
 void PositionPIDController::controlTimerCallback()
 {
   const rclcpp::Time now_time = now();
+  if (!flight_control_enabled_) {
+    last_update_time_ = now_time;
+    return;
+  }
   if (motion_hold_active_) {
     publishZeroVelocity();
     last_update_time_ = now_time;
