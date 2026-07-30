@@ -562,11 +562,14 @@ void RouteTargetPublisherNode::monitorTimerCallback()
     RCLCPP_INFO(
       get_logger(), "Reached waypoint %zu/%zu type=%d.",
       current_index_ + 1, targets_.size(), static_cast<int>(target.type));
-    if (!returning_ && current_index_ == 0 && takeoff_hover_sec_ > 0.0) {
+    if (!returning_ && fly_choice_ == kDropFlyChoice &&
+      current_index_ == 0 && takeoff_hover_sec_ > 0.0)
+    {
       setState(MissionState::TakeoffHover);
       RCLCPP_INFO(
         get_logger(),
-        "Holding initial flight-altitude waypoint for %.1f s before mission search.",
+        "Drop mission: holding initial flight-altitude waypoint for %.1f s "
+        "before mission search.",
         takeoff_hover_sec_);
       return;
     }

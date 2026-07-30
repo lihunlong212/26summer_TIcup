@@ -434,8 +434,9 @@ TEST_F(RouteMissionTest, LandingTriggerHoldTakeoffAndReturn)
       }));
 
   probe->pose_x_m = 0.0;
-  ASSERT_TRUE(waitFor(
-      [this]() {return probe->waypoint_index == 1;}, 1s));
+  pump(100ms);
+  EXPECT_EQ(probe->waypoint_index, 1);
+  EXPECT_EQ(probe->drone_state, 2);
   ASSERT_TRUE(waitFor(
       [this]() {return probe->visual_active;}, 1s,
       [this]() {probe->publishFine();}));
