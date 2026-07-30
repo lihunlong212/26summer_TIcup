@@ -210,6 +210,7 @@ protected:
       std::vector<std::string>{
         "(0 0 150 0)", "(-32 65 150 0)", "(-32 182 150 0)"});
     options.append_parameter_override("route_land_normal_count", 1);
+    options.append_parameter_override("takeoff_hover_sec", 0.2);
     options.append_parameter_override("fine_data_timeout_sec", 0.2);
     options.append_parameter_override("pre_descent_alignment_sec", 0.3);
     options.append_parameter_override("drop_alignment_height_cm", 55.0);
@@ -317,6 +318,9 @@ TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
   EXPECT_FALSE(probe->visual_active);
 
   probe->pose_x_m = 0.0;
+  pump(100ms);
+  EXPECT_EQ(probe->waypoint_index, 0);
+  EXPECT_EQ(probe->drone_state, 1);
   ASSERT_TRUE(waitFor(
       [this]() {return probe->waypoint_index == 1;}, 1s));
   pump(300ms);

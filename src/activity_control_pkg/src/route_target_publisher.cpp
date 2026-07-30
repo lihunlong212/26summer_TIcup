@@ -59,6 +59,7 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   position_tolerance_cm_ = declare_parameter<double>("position_tolerance_cm", 8.0);
   height_tolerance_cm_ = declare_parameter<double>("height_tolerance_cm", 8.0);
   yaw_tolerance_deg_ = declare_parameter<double>("yaw_tolerance_deg", 8.0);
+  takeoff_hover_sec_ = declare_parameter<double>("takeoff_hover_sec", 2.0);
   fine_data_timeout_sec_ = declare_parameter<double>("fine_data_timeout_sec", 0.2);
   pre_descent_alignment_sec_ =
     declare_parameter<double>("pre_descent_alignment_sec", 2.0);
@@ -74,7 +75,8 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   return_height_cm_ = declare_parameter<double>("return_height_cm", 150.0);
   drone_state_action_height_cm_ =
     declare_parameter<double>("drone_state_action_height_cm", 80.0);
-  if (fine_data_timeout_sec_ <= 0.0 ||
+  if (takeoff_hover_sec_ < 0.0 ||
+    fine_data_timeout_sec_ <= 0.0 ||
     pre_descent_alignment_sec_ < 0.0 ||
     drop_alignment_height_cm_ < 0.0 ||
     drop_alignment_tolerance_px_ < 0.0 ||
@@ -82,7 +84,8 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
     drone_state_action_height_cm_ < 0.0)
   {
     throw std::invalid_argument(
-            "fine_data_timeout_sec must be positive; pre-descent alignment and "
+            "takeoff hover must be non-negative; fine_data_timeout_sec must be "
+            "positive; pre-descent alignment and "
             "drop alignment parameters "
             "and drone_state_action_height_cm must use non-negative values; "
             "drop frame count must be positive");
@@ -152,10 +155,11 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
     "D-task route controller ready. Waiting for /fly_choice: 1=drop, 2=landing.");
   RCLCPP_INFO(
     get_logger(),
-    "fine_data_timeout=%.3fs pre_descent_alignment=%.1fs "
+    "takeoff_hover=%.1fs fine_data_timeout=%.3fs pre_descent_alignment=%.1fs "
     "drop_alignment=%.1fcm/%.1fpx/%ldframes "
     "landing_trigger=%.1fcm state_action_height=%.1fcm landed_hold=%.1fs",
-    fine_data_timeout_sec_, pre_descent_alignment_sec_, drop_alignment_height_cm_,
+    takeoff_hover_sec_, fine_data_timeout_sec_, pre_descent_alignment_sec_,
+    drop_alignment_height_cm_,
     drop_alignment_tolerance_px_, drop_alignment_required_frames_,
     landing_trigger_height_cm_, drone_state_action_height_cm_, landed_hold_sec_);
 }
@@ -433,7 +437,8 @@ void RouteTargetPublisherNode::monitorTimerCallback()
   double y_cm = 0.0;
   double yaw_deg = 0.0;
   if (!getCurrentPose(x_cm, y_cm, yaw_deg)) {
-    if (state_ == MissionState::HighAlignDrop ||
+    if (state_ == MissionState::TakeoffHover ||
+      state_ == MissionState::HighAlignDrop ||
       state_ == MissionState::HighAlignLand)
     {
       state_start_time_ = now_time;
@@ -447,6 +452,23 @@ void RouteTargetPublisherNode::monitorTimerCallback()
     task_y_cm_ = y_cm;
     task_yaw_deg_ = yaw_deg;
     startReturnRoute(true);
+    return;
+  }
+
+  if (state_ == MissionState::TakeoffHover) {
+    publishMotionHold(false);
+    if (!isCurrentTargetReached(x_cm, y_cm, yaw_deg)) {
+      state_start_time_ = now_time;
+      return;
+    }
+    if ((now_time - state_start_time_).seconds() >= takeoff_hover_sec_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Initial flight-altitude hover completed after %.1f s.",
+        takeoff_hover_sec_);
+      setState(MissionState::Navigating);
+      advanceTarget();
+    }
     return;
   }
 
@@ -540,6 +562,14 @@ void RouteTargetPublisherNode::monitorTimerCallback()
     RCLCPP_INFO(
       get_logger(), "Reached waypoint %zu/%zu type=%d.",
       current_index_ + 1, targets_.size(), static_cast<int>(target.type));
+    if (!returning_ && current_index_ == 0 && takeoff_hover_sec_ > 0.0) {
+      setState(MissionState::TakeoffHover);
+      RCLCPP_INFO(
+        get_logger(),
+        "Holding initial flight-altitude waypoint for %.1f s before mission search.",
+        takeoff_hover_sec_);
+      return;
+    }
     advanceTarget();
   }
 }
@@ -802,6 +832,8 @@ uint8_t RouteTargetPublisherNode::desiredDroneState() const
       return 0;
     case MissionState::Navigating:
       return search_segment_active_ ? 2 : 1;
+    case MissionState::TakeoffHover:
+      return 1;
     case MissionState::HighAlignDrop:
     case MissionState::HighAlignLand:
       return 2;
@@ -853,6 +885,7 @@ const char * RouteTargetPublisherNode::stateName(MissionState state)
   switch (state) {
     case MissionState::WaitingRoute: return "WAITING_ROUTE";
     case MissionState::Navigating: return "NAVIGATING";
+    case MissionState::TakeoffHover: return "TAKEOFF_HOVER";
     case MissionState::HighAlignDrop: return "HIGH_ALIGN_DROP";
     case MissionState::HighAlignLand: return "HIGH_ALIGN_LAND";
     case MissionState::FollowDrop: return "FOLLOW_DROP";

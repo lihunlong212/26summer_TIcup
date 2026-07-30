@@ -69,9 +69,11 @@ route_target_publisher:
     position_tolerance_cm: 8.0
     height_tolerance_cm: 8.0
     yaw_tolerance_deg: 5.0
+    # 首航点到达144cm航行高度后连续稳定悬停2秒，再开始前往搜索航点。
+    takeoff_hover_sec: 3.2
     # /fine_data超过该时间未更新即判定视觉丢失。
     fine_data_timeout_sec: 1.0
-    # 首次识别Tag后先保持搜索航点高度连续对准，满2秒才开始下降。
+    # 首次识别Tag后先保持搜索航点高度连续对准，满3秒才开始下降。
     pre_descent_alignment_sec: 3.0
 
     # 投放任务：高空对准结束后把高度目标设为55cm；
@@ -82,7 +84,7 @@ route_target_publisher:
     # 降落任务高空对准结束后把高度目标设为36cm，到达后发送停机指令。
     landing_trigger_height_cm: 36.0
     # 降落停机后保持全零速度5秒，再发送重新起飞指令。
-    landed_hold_sec: 5.0
+    landed_hold_sec: 5.6
     # 完成投放或重新起飞后的原地爬升高度。
     return_height_cm: 144.0
     # 发现Tag后，低于该高度才从伴飞状态2切换为投放3或降落4。
@@ -92,8 +94,8 @@ route_target_publisher:
     # 前normal_count个是普通航点，后面的全部是连续搜索航点。
     # 投放路线：收到/fly_choice=1时加载。
     route_drop_waypoints:
-      - "(0 0 144 0)"
-      - "(87.5 -37.5 144 0)"
+      - "(0 -37.5 144 0)"
+      - "(237.5 -37.5 144 0)"
       - "(237.5 -37.5 144 0)"
       - "(290 -65 144 0)"
       - "(312.5 -102.5 144 0)"
@@ -104,8 +106,8 @@ route_target_publisher:
 
     # 降落路线：收到/fly_choice=2时加载。
     route_land_waypoints:
-      - "(0 0 144 0)"
-      - "(87.5 -37.5 144 0)"
+      - "(0 -37.5 144 0)"
+      - "(237.5 -37.5 144 0)"
       - "(237.5 -37.5 144 0)"
       - "(290 -65 144 0)"
       - "(312.5 -102.5 144 0)"

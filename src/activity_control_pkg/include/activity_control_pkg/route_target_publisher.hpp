@@ -48,6 +48,7 @@ private:
   {
     WaitingRoute,
     Navigating,
+    TakeoffHover,
     HighAlignDrop,
     HighAlignLand,
     FollowDrop,
@@ -130,6 +131,7 @@ private:
   double position_tolerance_cm_;
   double height_tolerance_cm_;
   double yaw_tolerance_deg_;
+  double takeoff_hover_sec_;
   double fine_data_timeout_sec_;
   double pre_descent_alignment_sec_;
   double drop_alignment_height_cm_;
