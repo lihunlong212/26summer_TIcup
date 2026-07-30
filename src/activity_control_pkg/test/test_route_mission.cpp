@@ -45,6 +45,7 @@ public:
     height_cm(150),
     waypoint_index(-2),
     visual_active(false),
+    visual_descent_active(false),
     has_drone_state(false),
     drone_state(0)
   {
@@ -75,6 +76,11 @@ public:
       "/visual_takeover_active", durableQos(),
       [this](const std_msgs::msg::Bool::SharedPtr msg) {
         visual_active = msg->data;
+      });
+    visual_descent_sub = create_subscription<std_msgs::msg::Bool>(
+      "/visual_descent_active", durableQos(),
+      [this](const std_msgs::msg::Bool::SharedPtr msg) {
+        visual_descent_active = msg->data;
       });
     target_sub = create_subscription<std_msgs::msg::Float32MultiArray>(
       "/target_position", durableQos(),
@@ -153,6 +159,7 @@ public:
   int16_t height_cm;
   int32_t waypoint_index;
   bool visual_active;
+  bool visual_descent_active;
   bool has_drone_state;
   uint8_t drone_state;
   std::vector<uint8_t> drone_states;
@@ -169,6 +176,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr drone_state_sub;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr waypoint_sub;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr visual_sub;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr visual_descent_sub;
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr target_sub;
   rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr serial_sub;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
@@ -203,6 +211,7 @@ protected:
         "(0 0 150 0)", "(-32 65 150 0)", "(-32 182 150 0)"});
     options.append_parameter_override("route_land_normal_count", 1);
     options.append_parameter_override("fine_data_timeout_sec", 0.2);
+    options.append_parameter_override("pre_descent_alignment_sec", 0.3);
     options.append_parameter_override("drop_alignment_height_cm", 55.0);
     options.append_parameter_override("drop_alignment_tolerance_px", 100.0);
     options.append_parameter_override("drop_alignment_required_frames", 3);
@@ -325,7 +334,16 @@ TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
   EXPECT_TRUE(probe->visual_active);
   EXPECT_EQ(probe->drone_state, 2);
   ASSERT_GE(probe->target.size(), 4U);
-  EXPECT_FLOAT_EQ(probe->target[2], 55.0F);
+  EXPECT_FLOAT_EQ(probe->target[2], 150.0F);
+  EXPECT_FALSE(probe->visual_descent_active);
+  pump(100ms, [this]() {probe->publishFine();});
+  EXPECT_FLOAT_EQ(probe->target[2], 150.0F);
+  ASSERT_TRUE(waitFor(
+      [this]() {
+        return probe->target.size() >= 4 &&
+               std::fabs(probe->target[2] - 55.0F) < 0.6F &&
+               probe->visual_descent_active;
+      }, 1s, [this]() {probe->publishFine();}));
 
   probe->pose_x_m = 0.44;
   probe->pose_y_m = -0.22;
@@ -418,8 +436,15 @@ TEST_F(RouteMissionTest, LandingTriggerHoldTakeoffAndReturn)
       [this]() {return probe->visual_active;}, 1s,
       [this]() {probe->publishFine();}));
   ASSERT_GE(probe->target.size(), 4U);
-  EXPECT_FLOAT_EQ(probe->target[2], 45.0F);
+  EXPECT_FLOAT_EQ(probe->target[2], 150.0F);
+  EXPECT_FALSE(probe->visual_descent_active);
   EXPECT_EQ(probe->drone_state, 2);
+  ASSERT_TRUE(waitFor(
+      [this]() {
+        return probe->target.size() >= 4 &&
+               std::fabs(probe->target[2] - 45.0F) < 0.6F &&
+               probe->visual_descent_active;
+      }, 1s, [this]() {probe->publishFine();}));
 
   probe->pose_x_m = 0.12;
   probe->pose_y_m = 0.34;
@@ -431,10 +456,12 @@ TEST_F(RouteMissionTest, LandingTriggerHoldTakeoffAndReturn)
   ASSERT_TRUE(waitFor(
       [this]() {return probe->drone_state == 4;}, 1s,
       [this]() {probe->publishFine();}));
+  probe->height_cm = 50;
+  pump(250ms);
+  EXPECT_EQ(probe->commandCount(0x44, 0x01), 0U);
   probe->height_cm = 45;
   ASSERT_TRUE(waitFor(
-      [this]() {return probe->commandCount(0x44, 0x01) == 1;}, 1s,
-      [this]() {probe->publishFine();}));
+      [this]() {return probe->commandCount(0x44, 0x01) == 1;}, 1s));
   EXPECT_EQ(probe->drone_state, 4);
   pump(200ms, [this]() {probe->publishFine();});
   EXPECT_EQ(probe->commandCount(0x44, 0x01), 1U);

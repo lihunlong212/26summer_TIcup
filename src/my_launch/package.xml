@@ -6,6 +6,7 @@
   <description>Domain-1 flight stack launcher for the D-task aircraft.</description>
   <maintainer email="ubuntu@todo.todo">ubuntu</maintainer>
   <license>Apache-2.0</license>
+  <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>my_carto_pkg</exec_depend>

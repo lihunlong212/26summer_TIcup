@@ -41,41 +41,46 @@ position_pid_controller:
     ki_z: 0.0
     kd_z: 0.2
 
-    max_linear_velocity: 34.0
-    max_angular_velocity: 34.0
-    max_vertical_velocity: 34.0
+    max_linear_velocity: 35.0
+    max_angular_velocity: 35.0
+    max_vertical_velocity: 35.0
 
     # AprilTag像素误差对应的视觉XY PID。
-    visual_kp_x: 0.08
+    visual_kp_x: 0.18
     visual_ki_x: 0.0
     visual_kd_x: 0.01
-    visual_kp_y: 0.08
+    visual_kp_y: 0.16
     visual_ki_y: 0.0
     visual_kd_y: 0.01
     # 这里只是视觉PID的输出死区，不是投放三帧对准的100像素判定值。
     visual_pixel_deadzone: 5.0
-    visual_max_xy_velocity: 32.0
+    visual_max_xy_velocity: 34.0
     # 每帧视觉速度最多沿用0.2秒，超时后四轴速度严格归零。
-    visual_data_timeout_sec: 1.2
-    # 视觉跟随下降时，最大下降速度为20cm/s。
-    visual_descent_max_velocity_cm_s: 20.0
+    visual_data_timeout_sec: 2.3
+    # 视觉跟随下降：高度不低于60cm时最大下降20cm/s。
+    visual_descent_max_velocity_cm_s: 15.0
+    # 实际高度低于60cm后进入低空慢降，最大下降速度降为9cm/s。
+    visual_low_height_threshold_cm: 60.0
+    visual_low_height_descent_max_velocity_cm_s: 9.0
 
 route_target_publisher:
   ros__parameters:
     # 普通航点到达容差。
     position_tolerance_cm: 8.0
     height_tolerance_cm: 8.0
-    yaw_tolerance_deg: 8.0
+    yaw_tolerance_deg: 5.0
     # /fine_data超过该时间未更新即判定视觉丢失。
     fine_data_timeout_sec: 1.0
+    # 首次识别Tag后先保持搜索航点高度连续对准，满2秒才开始下降。
+    pre_descent_alignment_sec: 3.0
 
-    # 投放任务：发现Tag后直接把高度目标设为55cm；
+    # 投放任务：高空对准结束后把高度目标设为55cm；
     # 到达该高度后，两轴像素误差连续3个新帧都不超过100px才投放。
     drop_alignment_height_cm: 55.0
     drop_alignment_tolerance_px: 100.0
     drop_alignment_required_frames: 3
-    # 降落任务发现Tag后直接把高度目标设为42cm，到达后发送停机指令。
-    landing_trigger_height_cm: 42.0
+    # 降落任务高空对准结束后把高度目标设为42cm，到达后发送停机指令。
+    landing_trigger_height_cm: 36.0
     # 降落停机后保持全零速度5秒，再发送重新起飞指令。
     landed_hold_sec: 5.0
     # 完成投放或重新起飞后的原地爬升高度。

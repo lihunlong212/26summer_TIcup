@@ -33,7 +33,8 @@ class PidProbe : public rclcpp::Node
 {
 public:
   PidProbe()
-  : Node("pid_probe")
+  : Node("pid_probe"),
+    height_cm(150)
   {
     target_pub =
       create_publisher<std_msgs::msg::Float32MultiArray>(
@@ -80,7 +81,7 @@ public:
     target_pub->publish(target);
     if (publish_height) {
       std_msgs::msg::Int16 height;
-      height.data = 150;
+      height.data = height_cm;
       height_pub->publish(height);
     }
     publishBool(visual_pub, true);
@@ -109,6 +110,7 @@ public:
   }
 
   std::vector<std::vector<float>> velocities;
+  int16_t height_cm;
 
 private:
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr target_pub;
@@ -208,6 +210,20 @@ TEST_F(VisualDescentTest, LimitsDescentAndForcesExactZeroWhenVisionIsStale)
   for (const auto & velocity : probe->velocities) {
     if (velocity.size() == 4 && velocity[2] < 0.0F) {
       EXPECT_GE(velocity[2], -20.01F);
+    }
+  }
+
+  probe->velocities.clear();
+  probe->height_cm = 59;
+  ASSERT_TRUE(waitForVelocity(
+      [](const std::vector<float> & velocity) {
+        return velocity.size() == 4 &&
+               std::fabs(velocity[2] + 9.0F) < 0.2F;
+      },
+      1s, true));
+  for (const auto & velocity : probe->velocities) {
+    if (velocity.size() == 4 && velocity[2] < 0.0F) {
+      EXPECT_GE(velocity[2], -9.01F);
     }
   }
 

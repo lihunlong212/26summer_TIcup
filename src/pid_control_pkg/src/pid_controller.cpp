@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <stdexcept>
 
 namespace pid_control_pkg
 {
@@ -157,6 +158,8 @@ PositionPIDController::PositionPIDController()
   motion_hold_active_(true),
   visual_descent_active_(false),
   visual_descent_max_velocity_cm_s_(20.0),
+  visual_low_height_threshold_cm_(60.0),
+  visual_low_height_descent_max_velocity_cm_s_(9.0),
   has_visual_fine_data_(false),
   visual_error_x_px_(0.0),
   visual_error_y_px_(0.0),
@@ -414,8 +417,12 @@ std_msgs::msg::Float32MultiArray PositionPIDController::processPID(double dt)
     vel_z_cm = 0.0;
   }
   if (visual_descent_active_) {
+    const double descent_limit =
+      current_z_cm_ < visual_low_height_threshold_cm_ ?
+      visual_low_height_descent_max_velocity_cm_s_ :
+      visual_descent_max_velocity_cm_s_;
     vel_z_cm = std::clamp(
-      vel_z_cm, -std::fabs(visual_descent_max_velocity_cm_s_), 0.0);
+      vel_z_cm, -std::fabs(descent_limit), 0.0);
   }
 
   cmd.data[0] = static_cast<float>(vel_x_cm);
@@ -543,6 +550,18 @@ void PositionPIDController::loadParameters()
   visual_data_timeout_sec_ = declare_parameter<double>("visual_data_timeout_sec", 0.2);
   visual_descent_max_velocity_cm_s_ =
     declare_parameter<double>("visual_descent_max_velocity_cm_s", 20.0);
+  visual_low_height_threshold_cm_ =
+    declare_parameter<double>("visual_low_height_threshold_cm", 60.0);
+  visual_low_height_descent_max_velocity_cm_s_ =
+    declare_parameter<double>(
+      "visual_low_height_descent_max_velocity_cm_s", 9.0);
+  if (visual_descent_max_velocity_cm_s_ < 0.0 ||
+    visual_low_height_threshold_cm_ < 0.0 ||
+    visual_low_height_descent_max_velocity_cm_s_ < 0.0)
+  {
+    throw std::invalid_argument(
+            "Visual descent speed limits and low-height threshold must be non-negative.");
+  }
 
   pid_yaw_.setPID(kp_yaw, ki_yaw, kd_yaw);
   pid_z_.setPID(kp_z, ki_z, kd_z);
@@ -570,6 +589,11 @@ void PositionPIDController::loadParameters()
   RCLCPP_INFO(get_logger(),
     "Velocity limits: linear=%.1fcm/s angular=%.1fdeg/s vertical=%.1fcm/s",
     max_linear_vel_, max_angular_vel_, max_vertical_vel_);
+  RCLCPP_INFO(
+    get_logger(),
+    "Visual descent limits: %.1fcm/s; below %.1fcm use %.1fcm/s.",
+    visual_descent_max_velocity_cm_s_, visual_low_height_threshold_cm_,
+    visual_low_height_descent_max_velocity_cm_s_);
 }
 
 }  // namespace pid_control_pkg

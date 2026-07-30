@@ -60,6 +60,8 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   height_tolerance_cm_ = declare_parameter<double>("height_tolerance_cm", 8.0);
   yaw_tolerance_deg_ = declare_parameter<double>("yaw_tolerance_deg", 8.0);
   fine_data_timeout_sec_ = declare_parameter<double>("fine_data_timeout_sec", 0.2);
+  pre_descent_alignment_sec_ =
+    declare_parameter<double>("pre_descent_alignment_sec", 2.0);
   drop_alignment_height_cm_ =
     declare_parameter<double>("drop_alignment_height_cm", 55.0);
   drop_alignment_tolerance_px_ =
@@ -73,13 +75,15 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   drone_state_action_height_cm_ =
     declare_parameter<double>("drone_state_action_height_cm", 80.0);
   if (fine_data_timeout_sec_ <= 0.0 ||
+    pre_descent_alignment_sec_ < 0.0 ||
     drop_alignment_height_cm_ < 0.0 ||
     drop_alignment_tolerance_px_ < 0.0 ||
     drop_alignment_required_frames_ <= 0 ||
     drone_state_action_height_cm_ < 0.0)
   {
     throw std::invalid_argument(
-            "fine_data_timeout_sec must be positive; drop alignment parameters "
+            "fine_data_timeout_sec must be positive; pre-descent alignment and "
+            "drop alignment parameters "
             "and drone_state_action_height_cm must use non-negative values; "
             "drop frame count must be positive");
   }
@@ -148,9 +152,10 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
     "D-task route controller ready. Waiting for /fly_choice: 1=drop, 2=landing.");
   RCLCPP_INFO(
     get_logger(),
-    "fine_data_timeout=%.3fs drop_alignment=%.1fcm/%.1fpx/%ldframes "
+    "fine_data_timeout=%.3fs pre_descent_alignment=%.1fs "
+    "drop_alignment=%.1fcm/%.1fpx/%ldframes "
     "landing_trigger=%.1fcm state_action_height=%.1fcm landed_hold=%.1fs",
-    fine_data_timeout_sec_, drop_alignment_height_cm_,
+    fine_data_timeout_sec_, pre_descent_alignment_sec_, drop_alignment_height_cm_,
     drop_alignment_tolerance_px_, drop_alignment_required_frames_,
     landing_trigger_height_cm_, drone_state_action_height_cm_, landed_hold_sec_);
 }
@@ -408,10 +413,31 @@ void RouteTargetPublisherNode::monitorTimerCallback()
     return;
   }
 
+  if ((state_ == MissionState::HighAlignLand ||
+    state_ == MissionState::FollowLand) &&
+    has_height_ && current_height_cm_ <= landing_trigger_height_cm_)
+  {
+    search_segment_active_ = false;
+    has_fine_data_ = false;
+    publishMotionHold(true);
+    publishVisualState(false);
+    publishVisualDescentState(false);
+    publishVisionFresh(false);
+    last_vision_fresh_ = false;
+    setState(MissionState::LandingStopPending);
+    publishSerialByteCommand(kFlightSwitchFrameId, kEnabledValue);
+    return;
+  }
+
   double x_cm = 0.0;
   double y_cm = 0.0;
   double yaw_deg = 0.0;
   if (!getCurrentPose(x_cm, y_cm, yaw_deg)) {
+    if (state_ == MissionState::HighAlignDrop ||
+      state_ == MissionState::HighAlignLand)
+    {
+      state_start_time_ = now_time;
+    }
     publishMotionHold(true);
     return;
   }
@@ -421,6 +447,34 @@ void RouteTargetPublisherNode::monitorTimerCallback()
     task_y_cm_ = y_cm;
     task_yaw_deg_ = yaw_deg;
     startReturnRoute(true);
+    return;
+  }
+
+  if (state_ == MissionState::HighAlignDrop ||
+    state_ == MissionState::HighAlignLand)
+  {
+    if (!vision_fresh || !has_height_) {
+      state_start_time_ = now_time;
+      publishMotionHold(true);
+      return;
+    }
+    publishMotionHold(false);
+    if ((now_time - state_start_time_).seconds() >= pre_descent_alignment_sec_) {
+      Target descent_target = targets_[current_index_];
+      if (state_ == MissionState::HighAlignLand) {
+        descent_target.z_cm = landing_trigger_height_cm_;
+        setState(MissionState::FollowLand);
+      } else {
+        descent_target.z_cm = drop_alignment_height_cm_;
+        setState(MissionState::FollowDrop);
+      }
+      publishTarget(descent_target);
+      publishVisualDescentState(true);
+      RCLCPP_INFO(
+        get_logger(),
+        "High-altitude visual alignment completed; descent target is %.1f cm.",
+        descent_target.z_cm);
+    }
     return;
   }
 
@@ -461,17 +515,6 @@ void RouteTargetPublisherNode::monitorTimerCallback()
       return;
     }
     publishMotionHold(false);
-    if (has_height_ && current_height_cm_ <= landing_trigger_height_cm_) {
-      search_segment_active_ = false;
-      has_fine_data_ = false;
-      publishMotionHold(true);
-      publishVisualState(false);
-      publishVisualDescentState(false);
-      publishVisionFresh(false);
-      last_vision_fresh_ = false;
-      setState(MissionState::LandingStopPending);
-      publishSerialByteCommand(kFlightSwitchFrameId, kEnabledValue);
-    }
     return;
   }
 
@@ -507,22 +550,19 @@ void RouteTargetPublisherNode::beginSearchTask(const Target & target)
   search_segment_active_ = false;
   resetDropAlignmentCount();
 
-  Target visual_target = target;
   if (target.type == WaypointType::SearchLand) {
-    visual_target.z_cm = landing_trigger_height_cm_;
-    setState(MissionState::FollowLand);
+    setState(MissionState::HighAlignLand);
   } else {
-    visual_target.z_cm = drop_alignment_height_cm_;
-    setState(MissionState::FollowDrop);
+    setState(MissionState::HighAlignDrop);
   }
-  publishTarget(visual_target);
+  publishTarget(target);
   publishVisualState(true);
-  publishVisualDescentState(true);
+  publishVisualDescentState(false);
   publishMotionHold(false);
   RCLCPP_INFO(
     get_logger(),
-    "AprilTag detected on search leg %zu; removed later search waypoints and entered %s.",
-    current_index_ + 1, stateName(state_));
+    "AprilTag detected on search leg %zu; holding %.1f cm for %.1f s visual alignment.",
+    current_index_ + 1, target.z_cm, pre_descent_alignment_sec_);
 }
 
 void RouteTargetPublisherNode::updateSearchSegmentState()
@@ -762,6 +802,9 @@ uint8_t RouteTargetPublisherNode::desiredDroneState() const
       return 0;
     case MissionState::Navigating:
       return search_segment_active_ ? 2 : 1;
+    case MissionState::HighAlignDrop:
+    case MissionState::HighAlignLand:
+      return 2;
     case MissionState::FollowDrop:
       return has_height_ && current_height_cm_ < drone_state_action_height_cm_ ? 3 : 2;
     case MissionState::FollowLand:
@@ -810,6 +853,8 @@ const char * RouteTargetPublisherNode::stateName(MissionState state)
   switch (state) {
     case MissionState::WaitingRoute: return "WAITING_ROUTE";
     case MissionState::Navigating: return "NAVIGATING";
+    case MissionState::HighAlignDrop: return "HIGH_ALIGN_DROP";
+    case MissionState::HighAlignLand: return "HIGH_ALIGN_LAND";
     case MissionState::FollowDrop: return "FOLLOW_DROP";
     case MissionState::FollowLand: return "FOLLOW_LAND";
     case MissionState::DropCommandPending: return "DROP_COMMAND_PENDING";

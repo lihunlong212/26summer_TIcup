@@ -48,6 +48,8 @@ private:
   {
     WaitingRoute,
     Navigating,
+    HighAlignDrop,
+    HighAlignLand,
     FollowDrop,
     FollowLand,
     DropCommandPending,
@@ -129,6 +131,7 @@ private:
   double height_tolerance_cm_;
   double yaw_tolerance_deg_;
   double fine_data_timeout_sec_;
+  double pre_descent_alignment_sec_;
   double drop_alignment_height_cm_;
   double drop_alignment_tolerance_px_;
   int64_t drop_alignment_required_frames_;

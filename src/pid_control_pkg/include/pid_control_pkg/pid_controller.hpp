@@ -146,6 +146,8 @@ private:
   bool motion_hold_active_;
   bool visual_descent_active_;
   double visual_descent_max_velocity_cm_s_;
+  double visual_low_height_threshold_cm_;
+  double visual_low_height_descent_max_velocity_cm_s_;
   bool has_visual_fine_data_;
   double visual_error_x_px_;
   double visual_error_y_px_;
