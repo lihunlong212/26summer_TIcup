@@ -15,6 +15,8 @@ domain_bridge:
     drone_state_topic: "/drone_state"
     # 坐标和飞行阶段的持续发布频率，单位Hz。
     publish_frequency_hz: 10.0
+    # 将Domain 1的/tf和/tf_static限频转发到Domain 42，单位Hz。
+    tf_publish_frequency_hz: 2.0
 
 height_source_mux:
   ros__parameters:

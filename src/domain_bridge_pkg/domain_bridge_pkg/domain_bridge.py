@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from copy import deepcopy
 
 import rclpy
 from rclpy.context import Context
@@ -14,10 +15,29 @@ from rclpy.qos import (
 )
 from rclpy.time import Time
 from std_msgs.msg import Float32MultiArray, UInt8
+from tf2_msgs.msg import TFMessage
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
 def durable_qos() -> QoSProfile:
+    return QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+
+
+def dynamic_tf_qos() -> QoSProfile:
+    return QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=100,
+        reliability=ReliabilityPolicy.BEST_EFFORT,
+        durability=DurabilityPolicy.VOLATILE,
+    )
+
+
+def static_tf_qos() -> QoSProfile:
     return QoSProfile(
         history=HistoryPolicy.KEEP_LAST,
         depth=1,
@@ -62,9 +82,19 @@ class DomainBridge(Node):
                 ).value
             ),
         )
+        tf_publish_frequency_hz = max(
+            0.1,
+            float(
+                self.declare_parameter(
+                    "tf_publish_frequency_hz", 2.0
+                ).value
+            ),
+        )
 
         self._lock = threading.RLock()
         self._drone_state: int | None = None
+        self._dynamic_transforms = {}
+        self._static_transforms = {}
 
         self._local_context = Context()
         self._local_context.init(domain_id=self._local_domain_id)
@@ -81,6 +111,12 @@ class DomainBridge(Node):
                 self._on_drone_state,
                 durable_qos(),
             )
+        )
+        self._local_tf_sub = self._local_node.create_subscription(
+            TFMessage, "/tf", self._on_dynamic_tf, dynamic_tf_qos()
+        )
+        self._local_tf_static_sub = self._local_node.create_subscription(
+            TFMessage, "/tf_static", self._on_static_tf, static_tf_qos()
         )
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(
@@ -101,6 +137,12 @@ class DomainBridge(Node):
         )
         self._drone_state_pub = self._remote_node.create_publisher(
             UInt8, self._drone_state_topic, durable_qos()
+        )
+        self._tf_pub = self._remote_node.create_publisher(
+            TFMessage, "/tf", dynamic_tf_qos()
+        )
+        self._tf_static_pub = self._remote_node.create_publisher(
+            TFMessage, "/tf_static", static_tf_qos()
         )
         self._remote_fly_choice_sub = (
             self._remote_node.create_subscription(
@@ -131,12 +173,16 @@ class DomainBridge(Node):
         self._publish_timer = self._remote_node.create_timer(
             1.0 / publish_frequency_hz, self._publish_telemetry
         )
+        self._tf_publish_timer = self._remote_node.create_timer(
+            1.0 / tf_publish_frequency_hz, self._publish_tf
+        )
         self.get_logger().info(
             "bridge ready: "
             f"local DOMAIN={self._local_domain_id} <-> "
             f"remote DOMAIN={self._remote_domain_id}; "
             f"coordinates={self._coordinate_topic}; "
-            f"state={self._drone_state_topic}"
+            f"state={self._drone_state_topic}; "
+            f"TF relay={tf_publish_frequency_hz:.1f} Hz"
         )
 
     def _spin_local(self) -> None:
@@ -184,6 +230,21 @@ class DomainBridge(Node):
         if changed:
             self._publish_drone_state(state)
 
+    def _cache_tf(self, msg: TFMessage, destination: dict) -> None:
+        with self._lock:
+            for transform in msg.transforms:
+                key = (
+                    transform.header.frame_id,
+                    transform.child_frame_id,
+                )
+                destination[key] = deepcopy(transform)
+
+    def _on_dynamic_tf(self, msg: TFMessage) -> None:
+        self._cache_tf(msg, self._dynamic_transforms)
+
+    def _on_static_tf(self, msg: TFMessage) -> None:
+        self._cache_tf(msg, self._static_transforms)
+
     def _pose(self) -> tuple[float | None, float | None]:
         try:
             transform = self._tf_buffer.lookup_transform(
@@ -212,6 +273,21 @@ class DomainBridge(Node):
             state = self._drone_state
         if state is not None:
             self._publish_drone_state(state)
+
+    def _publish_tf(self) -> None:
+        with self._lock:
+            dynamic = [
+                deepcopy(transform)
+                for transform in self._dynamic_transforms.values()
+            ]
+            static = [
+                deepcopy(transform)
+                for transform in self._static_transforms.values()
+            ]
+        if dynamic:
+            self._tf_pub.publish(TFMessage(transforms=dynamic))
+        if static:
+            self._tf_static_pub.publish(TFMessage(transforms=static))
 
     def shutdown(self) -> None:
         try:

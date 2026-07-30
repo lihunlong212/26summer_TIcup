@@ -7,9 +7,15 @@ from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, UInt8
-from tf2_ros import TransformBroadcaster
+from tf2_msgs.msg import TFMessage
+from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
-from domain_bridge_pkg.domain_bridge import DomainBridge, durable_qos
+from domain_bridge_pkg.domain_bridge import (
+    DomainBridge,
+    durable_qos,
+    dynamic_tf_qos,
+    static_tf_qos,
+)
 
 
 def test_fly_choice_coordinates_and_drone_state_cross_domains():
@@ -39,6 +45,20 @@ def test_fly_choice_coordinates_and_drone_state_cross_domains():
         lambda msg: received_coordinates.append(list(msg.data)),
         10,
     )
+    received_dynamic_tf = []
+    tf_sub = remote_probe.create_subscription(
+        TFMessage,
+        "/tf",
+        lambda msg: received_dynamic_tf.extend(msg.transforms),
+        dynamic_tf_qos(),
+    )
+    received_static_tf = []
+    tf_static_sub = remote_probe.create_subscription(
+        TFMessage,
+        "/tf_static",
+        lambda msg: received_static_tf.extend(msg.transforms),
+        static_tf_qos(),
+    )
 
     local_context = Context()
     local_context.init(domain_id=1)
@@ -56,9 +76,12 @@ def test_fly_choice_coordinates_and_drone_state_cross_domains():
         UInt8, "/drone_state", durable_qos()
     )
     tf_broadcaster = TransformBroadcaster(local_probe)
+    static_tf_broadcaster = StaticTransformBroadcaster(local_probe)
 
     assert state_sub is not None
     assert coordinate_sub is not None
+    assert tf_sub is not None
+    assert tf_static_sub is not None
     assert choice_sub is not None
 
     def publish_transform():
@@ -73,6 +96,14 @@ def test_fly_choice_coordinates_and_drone_state_cross_domains():
         transform.transform.rotation.w = math.cos(yaw_rad / 2.0)
         tf_broadcaster.sendTransform(transform)
 
+    def publish_static_transform():
+        transform = TransformStamped()
+        transform.header.stamp = local_probe.get_clock().now().to_msg()
+        transform.header.frame_id = "laser_link"
+        transform.child_frame_id = "camera_link"
+        transform.transform.rotation.w = 1.0
+        static_tf_broadcaster.sendTransform(transform)
+
     def spin_all():
         local_executor.spin_once(timeout_sec=0.01)
         bridge_executor.spin_once(timeout_sec=0.01)
@@ -84,6 +115,7 @@ def test_fly_choice_coordinates_and_drone_state_cross_domains():
         silence_deadline = time.monotonic() + 0.4
         while time.monotonic() < silence_deadline:
             publish_transform()
+            publish_static_transform()
             spin_all()
         assert not received_states
 
@@ -99,11 +131,14 @@ def test_fly_choice_coordinates_and_drone_state_cross_domains():
                 state_pub.publish(state)
                 state_sent = True
             publish_transform()
+            publish_static_transform()
             spin_all()
             if (
                 1 in received_choices
                 and received_states
                 and received_coordinates
+                and received_dynamic_tf
+                and received_static_tf
             ):
                 break
 
@@ -116,6 +151,16 @@ def test_fly_choice_coordinates_and_drone_state_cross_domains():
         )
         assert math.isclose(
             received_coordinates[-1][1], -34.0, abs_tol=0.2
+        )
+        assert any(
+            transform.header.frame_id == "map"
+            and transform.child_frame_id == "laser_link"
+            for transform in received_dynamic_tf
+        )
+        assert any(
+            transform.header.frame_id == "laser_link"
+            and transform.child_frame_id == "camera_link"
+            for transform in received_static_tf
         )
 
         # One local transition is repeated by the bridge heartbeat.

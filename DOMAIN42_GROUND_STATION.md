@@ -2,7 +2,7 @@
 
 ## 1. 通信结构
 
-飞行控制节点固定运行在无人机的 ROS 2 Domain 1，地面站固定使用 Domain 42。无人机上运行的 `domain_bridge` 同时加入两个 Domain，只转发任务需要的三个话题：
+飞行控制节点固定运行在无人机的 ROS 2 Domain 1，地面站固定使用 Domain 42。无人机上运行的 `domain_bridge` 同时加入两个 Domain，只转发任务需要的话题：
 
 ```text
 地面站（Domain 42）                      无人机（Domain 1）
@@ -15,6 +15,9 @@
 
 /drone_state UInt8
      <──────────────── domain_bridge <──────────────── 任务控制器
+
+/tf、/tf_static TFMessage（2 Hz）
+     <──────────────── domain_bridge <──────────────── 本地建图TF
 ```
 
 Domain 42 不会直接看到 Domain 1 中的 PID、速度、激光高度等本地飞行话题。目标速度和实际速度仍由 Domain 1 内的节点通过串口发送给 STM32。
@@ -67,6 +70,16 @@ data:
 
 未选择任务，或者 TF、高度等条件不足、PID 尚未产生有效目标速度时，无人机不会发布 `/drone_state`。因此刚启动时监听不到状态属于正常现象。
 
+### `/tf` 和 `/tf_static`
+
+- 方向：无人机 → 地面站
+- 类型：`tf2_msgs/msg/TFMessage`
+- 转发频率：2 Hz
+- `/tf`：缓存并转发 Domain 1 每一对父子坐标系的最新动态变换
+- `/tf_static`：缓存并转发 Domain 1 的静态变换，使用可靠、瞬态本地 QoS
+
+当前 Cartographer 会产生动态 `/tf`。现有建图启动文件没有启动 `robot_state_publisher` 或额外静态 TF 节点，因此 Domain 1 当前不保证有 `/tf_static` 消息；桥已经保留该接口，以后本地出现静态变换时会自动转发。
+
 ## 3. 配置位置
 
 跨域参数位于：
@@ -86,6 +99,7 @@ domain_bridge:
     fly_choice_topic: "/fly_choice"
     drone_state_topic: "/drone_state"
     publish_frequency_hz: 10.0
+    tf_publish_frequency_hz: 2.0
 ```
 
 修改 Domain ID 或话题名称后，重新构建相关包：
@@ -157,6 +171,18 @@ ros2 topic info /drone_state -v
 /fly_choice
 /drone_position
 /drone_state
+/tf
+/tf_static
+```
+
+监听跨域 TF：
+
+```bash
+ros2 topic hz /tf
+ros2 topic echo /tf --once
+ros2 topic echo /tf_static --once \
+  --qos-reliability reliable \
+  --qos-durability transient_local
 ```
 
 ### 监听无人机坐标
@@ -349,7 +375,7 @@ ros2 topic pub --once /fly_choice std_msgs/msg/UInt8 "{data: 1}"
 
 ## 9. 常见故障排查
 
-### Domain 42 完全看不到三个话题
+### Domain 42 完全看不到跨域话题
 
 依次检查：
 
