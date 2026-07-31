@@ -91,7 +91,9 @@ route_target_publisher:
     # 程序会先在任务实时X/Y/Yaw处爬升到第一个返航航点的高度，再依次执行这些航点。
     post_task_return_waypoints:
       - "(0 0 144 0)"
-      - "(0 0 0 0)"
+      - "(0 0 15 0)"
+    # 最终返航下降时，实际高度严格低于该值后持续发送[0,0,0,0]目标速度。
+    final_landing_stop_height_cm: 21.0
     # 发现Tag后，低于该高度才从伴飞状态2切换为投放3或降落4。
     drone_state_action_height_cm: 80.0
 

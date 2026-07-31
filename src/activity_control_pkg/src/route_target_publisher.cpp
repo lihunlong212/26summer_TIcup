@@ -76,6 +76,8 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
     declare_parameter<double>("landing_trigger_height_cm", 45.0);
   drone_state_action_height_cm_ =
     declare_parameter<double>("drone_state_action_height_cm", 80.0);
+  final_landing_stop_height_cm_ =
+    declare_parameter<double>("final_landing_stop_height_cm", 21.0);
   declare_parameter<std::vector<std::string>>(
     "post_task_return_waypoints",
     std::vector<std::string>{"(0 0 150 0)", "(0 0 0 0)"});
@@ -86,7 +88,8 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
     drop_trigger_height_cm_ < drop_target_height_cm_ ||
     drop_alignment_tolerance_px_ < 0.0 ||
     drop_alignment_required_frames_ <= 0 ||
-    drone_state_action_height_cm_ < 0.0)
+    drone_state_action_height_cm_ < 0.0 ||
+    final_landing_stop_height_cm_ <= 0.0)
   {
     throw std::invalid_argument(
             "takeoff hover must be non-negative; fine_data_timeout_sec must be "
@@ -95,11 +98,17 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
             "drop_trigger_height_cm must be greater than or equal to "
             "drop_target_height_cm; "
             "and drone_state_action_height_cm must use non-negative values; "
+            "final_landing_stop_height_cm must be positive; "
             "drop frame count must be positive");
   }
   declareRouteParameters(kDropFlyChoice);
   declareRouteParameters(kLandingFlyChoice);
   post_task_return_waypoints_ = loadPostTaskReturnWaypoints();
+  if (post_task_return_waypoints_.back().z_cm >= final_landing_stop_height_cm_) {
+    throw std::invalid_argument(
+            "the final post_task_return_waypoint height must be lower than "
+            "final_landing_stop_height_cm");
+  }
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -165,11 +174,13 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
     get_logger(),
     "takeoff_hover=%.1fs fine_data_timeout=%.3fs pre_descent_alignment=%.1fs "
     "drop_target=%.1fcm drop_trigger=%.1fcm/%.1fpx/%ldframes "
-    "landing_trigger=%.1fcm state_action_height=%.1fcm landed_hold=%.1fs",
+    "landing_trigger=%.1fcm final_stop=%.1fcm "
+    "state_action_height=%.1fcm landed_hold=%.1fs",
     takeoff_hover_sec_, fine_data_timeout_sec_, pre_descent_alignment_sec_,
     drop_target_height_cm_, drop_trigger_height_cm_,
     drop_alignment_tolerance_px_, drop_alignment_required_frames_,
-    landing_trigger_height_cm_, drone_state_action_height_cm_, landed_hold_sec_);
+    landing_trigger_height_cm_, final_landing_stop_height_cm_,
+    drone_state_action_height_cm_, landed_hold_sec_);
 }
 
 void RouteTargetPublisherNode::declareRouteParameters(uint8_t fly_choice)
@@ -488,6 +499,19 @@ void RouteTargetPublisherNode::monitorTimerCallback()
     return;
   }
 
+  if (isFinalReturnLeg() &&
+    has_height_ &&
+    current_height_cm_ < final_landing_stop_height_cm_)
+  {
+    RCLCPP_INFO(
+      get_logger(),
+      "Final return descent reached %.1f cm (< %.1f cm); forcing continuous "
+      "[0,0,0,0] target velocity.",
+      current_height_cm_, final_landing_stop_height_cm_);
+    completeMission();
+    return;
+  }
+
   double x_cm = 0.0;
   double y_cm = 0.0;
   double yaw_deg = 0.0;
@@ -595,7 +619,7 @@ void RouteTargetPublisherNode::monitorTimerCallback()
   }
 
   publishMotionHold(false);
-  if (isCurrentTargetReached(x_cm, y_cm, yaw_deg)) {
+  if (!isFinalReturnLeg() && isCurrentTargetReached(x_cm, y_cm, yaw_deg)) {
     RCLCPP_INFO(
       get_logger(), "Reached waypoint %zu/%zu type=%d.",
       current_index_ + 1, targets_.size(), static_cast<int>(target.type));
@@ -750,6 +774,14 @@ bool RouteTargetPublisherNode::isCurrentTargetReached(
   return distance_xy <= position_tolerance_cm_ &&
          height_error <= height_tolerance_cm_ &&
          yaw_error <= yaw_tolerance_deg_;
+}
+
+bool RouteTargetPublisherNode::isFinalReturnLeg() const
+{
+  return state_ == MissionState::Returning &&
+         returning_ &&
+         !targets_.empty() &&
+         current_index_ == targets_.size() - 1;
 }
 
 bool RouteTargetPublisherNode::isFineDataAligned() const

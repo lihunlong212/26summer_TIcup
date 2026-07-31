@@ -85,6 +85,7 @@ private:
 
   bool getCurrentPose(double & x_cm, double & y_cm, double & yaw_deg);
   bool isCurrentTargetReached(double x_cm, double y_cm, double yaw_deg) const;
+  bool isFinalReturnLeg() const;
   bool hasFreshFineData(const rclcpp::Time & now_time) const;
   bool isFineDataAligned() const;
 
@@ -142,6 +143,7 @@ private:
   double landed_hold_sec_;
   double landing_trigger_height_cm_;
   double drone_state_action_height_cm_;
+  double final_landing_stop_height_cm_;
 
   std::vector<Target> targets_;
   std::vector<Target> post_task_return_waypoints_;
