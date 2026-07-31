@@ -47,21 +47,21 @@ position_pid_controller:
 
     # AprilTag像素误差对应的视觉XY PID。
     visual_kp_x: 0.09
-    visual_ki_x: 0.015
-    visual_kd_x: 0.02
+    visual_ki_x: 0.022
+    visual_kd_x: 0.025
     visual_kp_y: 0.09
-    visual_ki_y: 0.015
-    visual_kd_y: 0.02
+    visual_ki_y: 0.022
+    visual_kd_y: 0.025
     # 这里只是视觉PID的输出死区，不是投放三帧对准的100像素判定值。
     visual_pixel_deadzone: 5.0
-    visual_max_xy_velocity: 28.0
+    visual_max_xy_velocity: 29.0
     # 每帧视觉速度最多沿用0.2秒，超时后四轴速度严格归零。
     visual_data_timeout_sec: 3.0
     # 视觉跟随下降：高度不低于70cm时最大下降15cm/s。
     visual_descent_max_velocity_cm_s: 15.0
     # 实际高度低于70cm后进入低空慢降，最大下降速度降为8cm/s。
     visual_low_height_threshold_cm: 70.0
-    visual_low_height_descent_max_velocity_cm_s: 8.0
+    visual_low_height_descent_max_velocity_cm_s: 12.0
 
 route_target_publisher:
   ros__parameters:
@@ -78,8 +78,8 @@ route_target_publisher:
     pre_descent_alignment_sec: 1.0
 
     # 投放PID的目标高度为50cm；实际高度不高于57cm后才允许累计投放对准帧。
-    drop_target_height_cm: 50.0
-    drop_trigger_height_cm: 57.0
+    drop_target_height_cm: 56.0
+    drop_trigger_height_cm: 70.0
     # 这是投放判定容差：两轴误差连续2个新帧都不超过120px才投放。
     drop_alignment_tolerance_px: 120.0
     drop_alignment_required_frames: 2
@@ -92,7 +92,7 @@ route_target_publisher:
     post_task_return_waypoints:
       - "(0 0 144 0)"
       - "(0 0 15 0)"
-    # 最终返航下降时，实际高度严格低于该值后持续发送[0,0,0,0]目标速度。
+    # 最终返航下降时，实际高度严格低于该值后持续发送[0,0,0,0]，并单次发送0x44:0x01关锁。
     final_landing_stop_height_cm: 21.0
     # 发现Tag后，低于该高度才从伴飞状态2切换为投放3或降落4。
     drone_state_action_height_cm: 80.0

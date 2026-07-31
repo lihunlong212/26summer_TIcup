@@ -456,9 +456,15 @@ TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
       [this]() {return probe->motion_hold_active;}, 1s));
   EXPECT_EQ(probe->drone_state, 5);
   EXPECT_EQ(probe->commandCount(0x11, 0x01), 1U);
-  EXPECT_EQ(probe->commandCount(0x44, 0x01), 0U);
+  EXPECT_EQ(probe->commandCount(0x44, 0x01), 1U);
   EXPECT_EQ(probe->commandCount(0x44, 0x00), 0U);
   EXPECT_EQ(probe->commandCount(0x66, 0x06), 0U);
+  pump(200ms);
+  EXPECT_EQ(probe->commandCount(0x44, 0x01), 1U);
+  probe->publishSerialResult(0x44, 0x01);
+  pump(100ms);
+  EXPECT_TRUE(probe->motion_hold_active);
+  EXPECT_EQ(probe->commandCount(0x44, 0x00), 0U);
   EXPECT_EQ(
     std::count(probe->drone_states.begin(), probe->drone_states.end(), 0), 0);
 }
@@ -558,9 +564,15 @@ TEST_F(RouteMissionTest, LandingTriggerHoldTakeoffAndReturn)
   ASSERT_TRUE(waitFor(
       [this]() {return probe->motion_hold_active;}, 1s));
   EXPECT_EQ(probe->drone_state, 5);
-  EXPECT_EQ(probe->commandCount(0x44, 0x01), 1U);
+  EXPECT_EQ(probe->commandCount(0x44, 0x01), 2U);
   EXPECT_EQ(probe->commandCount(0x44, 0x00), 1U);
   EXPECT_EQ(probe->commandCount(0x66, 0x06), 0U);
+  pump(200ms);
+  EXPECT_EQ(probe->commandCount(0x44, 0x01), 2U);
+  probe->publishSerialResult(0x44, 0x01);
+  pump(100ms);
+  EXPECT_TRUE(probe->motion_hold_active);
+  EXPECT_EQ(probe->commandCount(0x44, 0x00), 1U);
   EXPECT_EQ(
     std::count(probe->drone_states.begin(), probe->drone_states.end(), 0), 0);
 }
@@ -605,6 +617,13 @@ TEST_F(RouteMissionTest, SearchWithoutTagEntersReturnStateFive)
   ASSERT_TRUE(waitFor(
       [this]() {return probe->motion_hold_active;}, 1s));
   EXPECT_EQ(probe->drone_state, 5);
+  EXPECT_EQ(probe->commandCount(0x44, 0x01), 1U);
+  pump(200ms);
+  EXPECT_EQ(probe->commandCount(0x44, 0x01), 1U);
+  probe->publishSerialResult(0x44, 0x01);
+  pump(100ms);
+  EXPECT_TRUE(probe->motion_hold_active);
+  EXPECT_EQ(probe->commandCount(0x44, 0x00), 0U);
 }
 
 TEST_F(RouteMissionTest, InvalidTupleRejectsMission)

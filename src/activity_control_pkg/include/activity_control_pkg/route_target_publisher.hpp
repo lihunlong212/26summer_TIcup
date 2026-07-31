@@ -59,6 +59,7 @@ private:
     TakeoffCommandPending,
     WaitingTakeoffPose,
     Returning,
+    FinalLandingStopPending,
     Completed,
     Error,
   };

@@ -380,7 +380,9 @@ void RouteTargetPublisherNode::serialCommandResultCallback(
 
   if (state_ == MissionState::DropCommandPending) {
     expected_result = frame_id == kDropFrameId && value == kEnabledValue;
-  } else if (state_ == MissionState::LandingStopPending) {
+  } else if (state_ == MissionState::LandingStopPending ||
+    state_ == MissionState::FinalLandingStopPending)
+  {
     expected_result = frame_id == kFlightSwitchFrameId && value == kEnabledValue;
   } else if (state_ == MissionState::TakeoffCommandPending) {
     expected_result = frame_id == kFlightSwitchFrameId && value == kDisabledValue;
@@ -405,6 +407,8 @@ void RouteTargetPublisherNode::serialCommandResultCallback(
     startReturnRoute(true);
   } else if (state_ == MissionState::LandingStopPending) {
     setState(MissionState::LandedHold);
+  } else if (state_ == MissionState::FinalLandingStopPending) {
+    completeMission();
   } else if (state_ == MissionState::TakeoffCommandPending) {
     // The car may have moved during the five-second hold. Keep publishing zero
     // velocity until a fresh TF pose can be captured after takeoff is enabled.
@@ -438,6 +442,7 @@ void RouteTargetPublisherNode::monitorTimerCallback()
 
   if (state_ == MissionState::DropCommandPending ||
     state_ == MissionState::LandingStopPending ||
+    state_ == MissionState::FinalLandingStopPending ||
     state_ == MissionState::TakeoffCommandPending)
   {
     publishMotionHold(true);
@@ -506,9 +511,11 @@ void RouteTargetPublisherNode::monitorTimerCallback()
     RCLCPP_INFO(
       get_logger(),
       "Final return descent reached %.1f cm (< %.1f cm); forcing continuous "
-      "[0,0,0,0] target velocity.",
+      "[0,0,0,0] target velocity and requesting flight lock.",
       current_height_cm_, final_landing_stop_height_cm_);
-    completeMission();
+    publishMotionHold(true);
+    setState(MissionState::FinalLandingStopPending);
+    publishSerialByteCommand(kFlightSwitchFrameId, kEnabledValue);
     return;
   }
 
@@ -912,6 +919,7 @@ uint8_t RouteTargetPublisherNode::desiredDroneState() const
       return 4;
     case MissionState::WaitingTakeoffPose:
     case MissionState::Returning:
+    case MissionState::FinalLandingStopPending:
     case MissionState::Completed:
       return 5;
     case MissionState::Error:
@@ -959,6 +967,7 @@ const char * RouteTargetPublisherNode::stateName(MissionState state)
     case MissionState::TakeoffCommandPending: return "TAKEOFF_COMMAND_PENDING";
     case MissionState::WaitingTakeoffPose: return "WAITING_TAKEOFF_POSE";
     case MissionState::Returning: return "RETURNING";
+    case MissionState::FinalLandingStopPending: return "FINAL_LANDING_STOP_PENDING";
     case MissionState::Completed: return "COMPLETED";
     case MissionState::Error: return "ERROR";
   }
