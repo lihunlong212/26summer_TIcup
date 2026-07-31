@@ -81,7 +81,7 @@ route_target_publisher:
     drop_target_height_cm: 56.0
     drop_trigger_height_cm: 70.0
     # 这是投放判定容差：两轴误差连续2个新帧都不超过120px才投放。
-    drop_alignment_tolerance_px: 120.0
+    drop_alignment_tolerance_px: 100.0
     drop_alignment_required_frames: 2
     # 降落任务高空对准结束后把高度目标设为28cm，到达后发送停机指令。
     landing_trigger_height_cm: 28.0
