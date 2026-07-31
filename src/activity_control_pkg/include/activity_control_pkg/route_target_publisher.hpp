@@ -73,6 +73,7 @@ private:
   void monitorTimerCallback();
 
   std::vector<Target> loadConfiguredRoute(uint8_t fly_choice) const;
+  std::vector<Target> loadPostTaskReturnWaypoints() const;
   void declareRouteParameters(uint8_t fly_choice);
   void loadRoute(uint8_t fly_choice);
   void beginSearchTask(const Target & target);
@@ -134,15 +135,16 @@ private:
   double takeoff_hover_sec_;
   double fine_data_timeout_sec_;
   double pre_descent_alignment_sec_;
-  double drop_alignment_height_cm_;
+  double drop_target_height_cm_;
+  double drop_trigger_height_cm_;
   double drop_alignment_tolerance_px_;
   int64_t drop_alignment_required_frames_;
   double landed_hold_sec_;
   double landing_trigger_height_cm_;
-  double return_height_cm_;
   double drone_state_action_height_cm_;
 
   std::vector<Target> targets_;
+  std::vector<Target> post_task_return_waypoints_;
   std::size_t current_index_;
   uint8_t fly_choice_;
   MissionState state_;

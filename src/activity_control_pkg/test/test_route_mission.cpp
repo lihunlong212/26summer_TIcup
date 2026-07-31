@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -213,12 +214,15 @@ protected:
     options.append_parameter_override("takeoff_hover_sec", 0.2);
     options.append_parameter_override("fine_data_timeout_sec", 0.2);
     options.append_parameter_override("pre_descent_alignment_sec", 0.3);
-    options.append_parameter_override("drop_alignment_height_cm", 55.0);
-    options.append_parameter_override("drop_alignment_tolerance_px", 100.0);
-    options.append_parameter_override("drop_alignment_required_frames", 3);
+    options.append_parameter_override("drop_target_height_cm", 50.0);
+    options.append_parameter_override("drop_trigger_height_cm", 57.0);
+    options.append_parameter_override("drop_alignment_tolerance_px", 120.0);
+    options.append_parameter_override("drop_alignment_required_frames", 2);
     options.append_parameter_override("landing_trigger_height_cm", 45.0);
     options.append_parameter_override("landed_hold_sec", 0.2);
-    options.append_parameter_override("return_height_cm", 150.0);
+    options.append_parameter_override(
+      "post_task_return_waypoints",
+      std::vector<std::string>{"(0 0 150 0)", "(0 0 0 0)"});
     options.append_parameter_override("drone_state_action_height_cm", 80.0);
     return options;
   }
@@ -313,16 +317,17 @@ TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
         probe->publishTargetVelocity();
       }));
 
-  pump(300ms, [this]() {probe->publishFine();});
-  EXPECT_EQ(probe->waypoint_index, 0);
-  EXPECT_FALSE(probe->visual_active);
-
-  probe->pose_x_m = 0.0;
+  // The drop countdown starts from height alone. XY/yaw are still far from the
+  // first waypoint, and leaving the altitude band after start does not reset it.
   pump(100ms);
   EXPECT_EQ(probe->waypoint_index, 0);
+  EXPECT_FALSE(probe->visual_active);
+  probe->height_cm = 130;
   EXPECT_EQ(probe->drone_state, 1);
   ASSERT_TRUE(waitFor(
       [this]() {return probe->waypoint_index == 1;}, 1s));
+  EXPECT_NEAR(probe->pose_x_m, 1.0, 1e-6);
+  probe->height_cm = 150;
   pump(300ms);
   EXPECT_EQ(probe->drone_state, 2);
   EXPECT_FALSE(probe->visual_active);
@@ -345,7 +350,7 @@ TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
   ASSERT_TRUE(waitFor(
       [this]() {
         return probe->target.size() >= 4 &&
-               std::fabs(probe->target[2] - 55.0F) < 0.6F &&
+               std::fabs(probe->target[2] - 50.0F) < 0.6F &&
                probe->visual_descent_active;
       }, 1s, [this]() {probe->publishFine();}));
 
@@ -359,19 +364,27 @@ TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
   ASSERT_TRUE(waitFor(
       [this]() {return probe->drone_state == 3;}, 1s,
       [this]() {probe->publishFine();}));
-  probe->height_cm = 55;
-
-  // Two aligned frames are insufficient.
+  // The PID target is 50 cm, but 58 cm is still too high to release.
+  probe->height_cm = 58;
   probe->publishFine(80, -80);
   pump(60ms);
   probe->publishFine(80, -80);
   pump(60ms);
   EXPECT_EQ(probe->commandCount(0x11, 0x01), 0U);
 
-  // One out-of-tolerance frame resets the count.
-  probe->publishFine(101, 0);
-  pump(60ms);
+  // Returning above 57 cm after one valid frame resets the count.
+  probe->height_cm = 57;
   probe->publishFine(80, -80);
+  pump(60ms);
+  probe->height_cm = 58;
+  pump(100ms);
+  probe->height_cm = 57;
+  probe->publishFine(80, -80);
+  pump(60ms);
+  EXPECT_EQ(probe->commandCount(0x11, 0x01), 0U);
+
+  // One out-of-tolerance frame resets the count.
+  probe->publishFine(121, 0);
   pump(60ms);
   probe->publishFine(80, -80);
   pump(60ms);
@@ -379,9 +392,6 @@ TEST_F(RouteMissionTest, DropSearchTakeoverTriggerAndReturn)
 
   // A visual timeout also resets the count.
   pump(260ms);
-  probe->publishFine(80, -80);
-  pump(60ms);
-  EXPECT_EQ(probe->commandCount(0x11, 0x01), 0U);
   probe->publishFine(80, -80);
   pump(60ms);
   EXPECT_EQ(probe->commandCount(0x11, 0x01), 0U);
@@ -551,6 +561,37 @@ TEST_F(RouteMissionTest, InvalidNormalCountRejectsMission)
       probe->publishTargetVelocity();
     });
   EXPECT_FALSE(probe->has_drone_state);
+}
+
+TEST_F(RouteMissionTest, InvalidDropHeightRelationshipRejectsStartup)
+{
+  auto options = routeOptions();
+  options.append_parameter_override("drop_target_height_cm", 58.0);
+  options.append_parameter_override("drop_trigger_height_cm", 57.0);
+  EXPECT_THROW(
+    std::make_shared<activity_control_pkg::RouteTargetPublisherNode>(options),
+    std::invalid_argument);
+}
+
+TEST_F(RouteMissionTest, InvalidPostTaskReturnWaypointRejectsStartup)
+{
+  auto options = routeOptions();
+  options.append_parameter_override(
+    "post_task_return_waypoints",
+    std::vector<std::string>{"(0 0 150)", "(0 0 0 0)"});
+  EXPECT_THROW(
+    std::make_shared<activity_control_pkg::RouteTargetPublisherNode>(options),
+    std::runtime_error);
+}
+
+TEST_F(RouteMissionTest, EmptyPostTaskReturnRouteRejectsStartup)
+{
+  auto options = routeOptions();
+  options.append_parameter_override(
+    "post_task_return_waypoints", std::vector<std::string>{});
+  EXPECT_THROW(
+    std::make_shared<activity_control_pkg::RouteTargetPublisherNode>(options),
+    std::runtime_error);
 }
 
 }  // namespace

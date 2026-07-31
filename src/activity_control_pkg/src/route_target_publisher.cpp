@@ -63,8 +63,10 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   fine_data_timeout_sec_ = declare_parameter<double>("fine_data_timeout_sec", 0.2);
   pre_descent_alignment_sec_ =
     declare_parameter<double>("pre_descent_alignment_sec", 2.0);
-  drop_alignment_height_cm_ =
-    declare_parameter<double>("drop_alignment_height_cm", 55.0);
+  drop_target_height_cm_ =
+    declare_parameter<double>("drop_target_height_cm", 50.0);
+  drop_trigger_height_cm_ =
+    declare_parameter<double>("drop_trigger_height_cm", 57.0);
   drop_alignment_tolerance_px_ =
     declare_parameter<double>("drop_alignment_tolerance_px", 100.0);
   drop_alignment_required_frames_ =
@@ -72,13 +74,16 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   landed_hold_sec_ = declare_parameter<double>("landed_hold_sec", 5.0);
   landing_trigger_height_cm_ =
     declare_parameter<double>("landing_trigger_height_cm", 45.0);
-  return_height_cm_ = declare_parameter<double>("return_height_cm", 150.0);
   drone_state_action_height_cm_ =
     declare_parameter<double>("drone_state_action_height_cm", 80.0);
+  declare_parameter<std::vector<std::string>>(
+    "post_task_return_waypoints",
+    std::vector<std::string>{"(0 0 150 0)", "(0 0 0 0)"});
   if (takeoff_hover_sec_ < 0.0 ||
     fine_data_timeout_sec_ <= 0.0 ||
     pre_descent_alignment_sec_ < 0.0 ||
-    drop_alignment_height_cm_ < 0.0 ||
+    drop_target_height_cm_ < 0.0 ||
+    drop_trigger_height_cm_ < drop_target_height_cm_ ||
     drop_alignment_tolerance_px_ < 0.0 ||
     drop_alignment_required_frames_ <= 0 ||
     drone_state_action_height_cm_ < 0.0)
@@ -86,12 +91,15 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
     throw std::invalid_argument(
             "takeoff hover must be non-negative; fine_data_timeout_sec must be "
             "positive; pre-descent alignment and "
-            "drop alignment parameters "
+            "drop alignment parameters must be non-negative; "
+            "drop_trigger_height_cm must be greater than or equal to "
+            "drop_target_height_cm; "
             "and drone_state_action_height_cm must use non-negative values; "
             "drop frame count must be positive");
   }
   declareRouteParameters(kDropFlyChoice);
   declareRouteParameters(kLandingFlyChoice);
+  post_task_return_waypoints_ = loadPostTaskReturnWaypoints();
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -156,10 +164,10 @@ RouteTargetPublisherNode::RouteTargetPublisherNode(const rclcpp::NodeOptions & o
   RCLCPP_INFO(
     get_logger(),
     "takeoff_hover=%.1fs fine_data_timeout=%.3fs pre_descent_alignment=%.1fs "
-    "drop_alignment=%.1fcm/%.1fpx/%ldframes "
+    "drop_target=%.1fcm drop_trigger=%.1fcm/%.1fpx/%ldframes "
     "landing_trigger=%.1fcm state_action_height=%.1fcm landed_hold=%.1fs",
     takeoff_hover_sec_, fine_data_timeout_sec_, pre_descent_alignment_sec_,
-    drop_alignment_height_cm_,
+    drop_target_height_cm_, drop_trigger_height_cm_,
     drop_alignment_tolerance_px_, drop_alignment_required_frames_,
     landing_trigger_height_cm_, drone_state_action_height_cm_, landed_hold_sec_);
 }
@@ -199,6 +207,22 @@ std::vector<Target> RouteTargetPublisherNode::loadConfiguredRoute(uint8_t fly_ch
       index < static_cast<std::size_t>(normal_count) ?
       WaypointType::Normal : search_type;
     route.push_back(parseWaypoint(waypoint_texts[index], type));
+  }
+  return route;
+}
+
+std::vector<Target> RouteTargetPublisherNode::loadPostTaskReturnWaypoints() const
+{
+  const auto waypoint_texts =
+    get_parameter("post_task_return_waypoints").as_string_array();
+  if (waypoint_texts.empty()) {
+    throw std::runtime_error("post_task_return_waypoints must not be empty");
+  }
+
+  std::vector<Target> route;
+  route.reserve(waypoint_texts.size());
+  for (const auto & waypoint_text : waypoint_texts) {
+    route.push_back(parseWaypoint(waypoint_text, WaypointType::Normal));
   }
   return route;
 }
@@ -288,7 +312,7 @@ void RouteTargetPublisherNode::fineDataCallback(
   // A frame is counted exactly once here, never once per control/monitor cycle.
   if (state_ == MissionState::FollowDrop) {
     if (has_height_ &&
-      current_height_cm_ <= drop_alignment_height_cm_ &&
+      current_height_cm_ <= drop_trigger_height_cm_ &&
       isFineDataAligned())
     {
       drop_aligned_frame_count_ = std::min(
@@ -433,12 +457,42 @@ void RouteTargetPublisherNode::monitorTimerCallback()
     return;
   }
 
+  if (state_ == MissionState::Navigating &&
+    !returning_ &&
+    fly_choice_ == kDropFlyChoice &&
+    current_index_ == 0 &&
+    current_index_ < targets_.size() &&
+    takeoff_hover_sec_ > 0.0 &&
+    has_height_ &&
+    std::fabs(current_height_cm_ - targets_[current_index_].z_cm) <=
+    height_tolerance_cm_)
+  {
+    setState(MissionState::TakeoffHover);
+    RCLCPP_INFO(
+      get_logger(),
+      "Drop mission reached the initial flight-altitude band; starting %.1f s "
+      "countdown without waiting for XY/yaw stability.",
+      takeoff_hover_sec_);
+  }
+
+  if (state_ == MissionState::TakeoffHover) {
+    publishMotionHold(false);
+    if ((now_time - state_start_time_).seconds() >= takeoff_hover_sec_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Initial flight-altitude countdown completed after %.1f s.",
+        takeoff_hover_sec_);
+      setState(MissionState::Navigating);
+      advanceTarget();
+    }
+    return;
+  }
+
   double x_cm = 0.0;
   double y_cm = 0.0;
   double yaw_deg = 0.0;
   if (!getCurrentPose(x_cm, y_cm, yaw_deg)) {
-    if (state_ == MissionState::TakeoffHover ||
-      state_ == MissionState::HighAlignDrop ||
+    if (state_ == MissionState::HighAlignDrop ||
       state_ == MissionState::HighAlignLand)
     {
       state_start_time_ = now_time;
@@ -452,23 +506,6 @@ void RouteTargetPublisherNode::monitorTimerCallback()
     task_y_cm_ = y_cm;
     task_yaw_deg_ = yaw_deg;
     startReturnRoute(true);
-    return;
-  }
-
-  if (state_ == MissionState::TakeoffHover) {
-    publishMotionHold(false);
-    if (!isCurrentTargetReached(x_cm, y_cm, yaw_deg)) {
-      state_start_time_ = now_time;
-      return;
-    }
-    if ((now_time - state_start_time_).seconds() >= takeoff_hover_sec_) {
-      RCLCPP_INFO(
-        get_logger(),
-        "Initial flight-altitude hover completed after %.1f s.",
-        takeoff_hover_sec_);
-      setState(MissionState::Navigating);
-      advanceTarget();
-    }
     return;
   }
 
@@ -487,7 +524,7 @@ void RouteTargetPublisherNode::monitorTimerCallback()
         descent_target.z_cm = landing_trigger_height_cm_;
         setState(MissionState::FollowLand);
       } else {
-        descent_target.z_cm = drop_alignment_height_cm_;
+        descent_target.z_cm = drop_target_height_cm_;
         setState(MissionState::FollowDrop);
       }
       publishTarget(descent_target);
@@ -506,12 +543,12 @@ void RouteTargetPublisherNode::monitorTimerCallback()
       publishMotionHold(true);
       return;
     }
-    if (!has_height_ || current_height_cm_ > drop_alignment_height_cm_) {
+    if (!has_height_ || current_height_cm_ > drop_trigger_height_cm_) {
       resetDropAlignmentCount();
     }
     publishMotionHold(false);
     if (has_height_ &&
-      current_height_cm_ <= drop_alignment_height_cm_ &&
+      current_height_cm_ <= drop_trigger_height_cm_ &&
       drop_aligned_frame_count_ >= drop_alignment_required_frames_)
     {
       task_x_cm_ = x_cm;
@@ -562,17 +599,6 @@ void RouteTargetPublisherNode::monitorTimerCallback()
     RCLCPP_INFO(
       get_logger(), "Reached waypoint %zu/%zu type=%d.",
       current_index_ + 1, targets_.size(), static_cast<int>(target.type));
-    if (!returning_ && fly_choice_ == kDropFlyChoice &&
-      current_index_ == 0 && takeoff_hover_sec_ > 0.0)
-    {
-      setState(MissionState::TakeoffHover);
-      RCLCPP_INFO(
-        get_logger(),
-        "Drop mission: holding initial flight-altitude waypoint for %.1f s "
-        "before mission search.",
-        takeoff_hover_sec_);
-      return;
-    }
     advanceTarget();
   }
 }
@@ -632,13 +658,15 @@ void RouteTargetPublisherNode::startReturnRoute(bool takeoff_from_car)
 {
   targets_.clear();
   if (takeoff_from_car) {
+    const double climb_height_cm = post_task_return_waypoints_.front().z_cm;
     targets_.push_back(Target{
-      task_x_cm_, task_y_cm_, return_height_cm_, task_yaw_deg_,
+      task_x_cm_, task_y_cm_, climb_height_cm, task_yaw_deg_,
       WaypointType::Normal});
   }
-  targets_.push_back(Target{
-    0.0, 0.0, return_height_cm_, 0.0, WaypointType::Normal});
-  targets_.push_back(Target{0.0, 0.0, 0.0, 0.0, WaypointType::Normal});
+  targets_.insert(
+    targets_.end(),
+    post_task_return_waypoints_.begin(),
+    post_task_return_waypoints_.end());
   current_index_ = 0;
   returning_ = true;
   search_segment_active_ = false;

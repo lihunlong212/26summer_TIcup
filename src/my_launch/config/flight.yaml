@@ -46,11 +46,11 @@ position_pid_controller:
     max_vertical_velocity: 35.0
 
     # AprilTag像素误差对应的视觉XY PID。
-    visual_kp_x: 0.10
-    visual_ki_x: 0.02
+    visual_kp_x: 0.09
+    visual_ki_x: 0.015
     visual_kd_x: 0.02
-    visual_kp_y: 0.10
-    visual_ki_y: 0.02
+    visual_kp_y: 0.09
+    visual_ki_y: 0.015
     visual_kd_y: 0.02
     # 这里只是视觉PID的输出死区，不是投放三帧对准的100像素判定值。
     visual_pixel_deadzone: 5.0
@@ -68,25 +68,30 @@ route_target_publisher:
     # 普通航点到达容差。
     position_tolerance_cm: 8.0
     height_tolerance_cm: 8.0
-    yaw_tolerance_deg: 5.0
-    # 仅投放任务使用：首航点到达144cm后稳定悬停；降落任务到达后直接搜索。
-    takeoff_hover_sec: 3.2
+    yaw_tolerance_deg: 8.0
+    # 仅投放任务使用：实际高度首次进入首航点高度容差后立即开始倒计时；
+    # 不等待XY/Yaw到位，计时开始后也不因高度波动而清零。降落任务不等待。
+    takeoff_hover_sec: 3.0
     # /fine_data超过该时间未更新即判定视觉丢失。
     fine_data_timeout_sec: 1.0
-    # 首次识别Tag后先保持搜索航点高度连续对准，满3秒才开始下降。
-    pre_descent_alignment_sec: 3.0
+    # 首次识别Tag后先保持搜索航点高度连续对准，满该时间后开始下降。
+    pre_descent_alignment_sec: 1.0
 
-    # 投放任务：高空对准结束后把高度目标设为55cm；
-    # 到达该高度后，两轴像素误差连续3个新帧都不超过100px才投放。
-    drop_alignment_height_cm: 55.0
-    drop_alignment_tolerance_px: 75.0
-    drop_alignment_required_frames: 3
-    # 降落任务高空对准结束后把高度目标设为36cm，到达后发送停机指令。
+    # 投放PID的目标高度为50cm；实际高度不高于57cm后才允许累计投放对准帧。
+    drop_target_height_cm: 50.0
+    drop_trigger_height_cm: 57.0
+    # 这是投放判定容差：两轴误差连续2个新帧都不超过120px才投放。
+    drop_alignment_tolerance_px: 120.0
+    drop_alignment_required_frames: 2
+    # 降落任务高空对准结束后把高度目标设为28cm，到达后发送停机指令。
     landing_trigger_height_cm: 28.0
     # 降落停机后保持全零速度5秒，再发送重新起飞指令。
     landed_hold_sec: 5.6
-    # 完成投放或重新起飞后的原地爬升高度。
-    return_height_cm: 144.0
+    # 投放或降落完成后的固定返航航点。
+    # 程序会先在任务实时X/Y/Yaw处爬升到第一个返航航点的高度，再依次执行这些航点。
+    post_task_return_waypoints:
+      - "(0 0 144 0)"
+      - "(0 0 0 0)"
     # 发现Tag后，低于该高度才从伴飞状态2切换为投放3或降落4。
     drone_state_action_height_cm: 80.0
 
