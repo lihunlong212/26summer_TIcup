@@ -25,6 +25,12 @@ height_source_mux:
     # stm32 = 使用STM32的0x05高度帧。
     height_source: "laser_array"
 
+vision_source:
+  ros__parameters:
+    # 视觉来源：apriltag=现有AprilTag；target=备用双圆环和十字视觉。
+    # 两个视觉节点严格二选一启动，不会同时占用摄像头。
+    visual_mode: "apriltag"
+
 position_pid_controller:
   ros__parameters:
     # PID控制循环频率，单位Hz。
@@ -45,13 +51,13 @@ position_pid_controller:
     max_angular_velocity: 35.0
     max_vertical_velocity: 35.0
 
-    # AprilTag像素误差对应的视觉XY PID。
+    # 统一/fine_data像素误差对应的视觉XY PID，适用于两种视觉来源。
     visual_kp_x: 0.09
-    visual_ki_x: 0.022
-    visual_kd_x: 0.025
+    visual_ki_x: 0.02
+    visual_kd_x: 0.02
     visual_kp_y: 0.09
-    visual_ki_y: 0.022
-    visual_kd_y: 0.025
+    visual_ki_y: 0.02
+    visual_kd_y: 0.02
     # 这里只是视觉PID的输出死区，不是投放三帧对准的100像素判定值。
     visual_pixel_deadzone: 5.0
     visual_max_xy_velocity: 29.0

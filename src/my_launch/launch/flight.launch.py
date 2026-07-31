@@ -5,16 +5,52 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    OpaqueFunction,
     TimerAction,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+from my_launch.vision_selection import load_visual_settings
+
 
 def _package_launch(package_name: str, filename: str) -> str:
     package_share = get_package_share_directory(package_name)
     return os.path.join(package_share, "launch", filename)
+
+
+def _launch_selected_vision(context, config_file):
+    config_path = context.perform_substitution(config_file)
+    visual_mode, low_height_threshold_cm = load_visual_settings(config_path)
+
+    if visual_mode == "apriltag":
+        return [
+            Node(
+                package="drone_camera_pkg",
+                executable="drone_camera_node",
+                name="drone_camera_node",
+                output="screen",
+            )
+        ]
+
+    if visual_mode == "target":
+        return [
+            Node(
+                package="target_vision_pkg",
+                executable="target_vision_node",
+                name="target_vision_node",
+                output="screen",
+                parameters=[
+                    {
+                        "show_dashboard": False,
+                        "low_height_threshold_cm": low_height_threshold_cm,
+                    }
+                ],
+            )
+        ]
+
+    return []
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -30,7 +66,10 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "config_file",
                 default_value=default_config,
-                description="PID, vision-control, height-source and waypoint parameters.",
+                description=(
+                    "PID, vision-control, height-source and waypoint "
+                    "parameters."
+                ),
             ),
             Node(
                 package="domain_bridge_pkg",
@@ -69,11 +108,9 @@ def generate_launch_description() -> LaunchDescription:
             TimerAction(
                 period=4.0,
                 actions=[
-                    Node(
-                        package="drone_camera_pkg",
-                        executable="drone_camera_node",
-                        name="drone_camera_node",
-                        output="screen",
+                    OpaqueFunction(
+                        function=_launch_selected_vision,
+                        args=[config_file],
                     )
                 ],
             ),

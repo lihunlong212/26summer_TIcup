@@ -651,7 +651,7 @@ void RouteTargetPublisherNode::beginSearchTask(const Target & target)
   publishMotionHold(false);
   RCLCPP_INFO(
     get_logger(),
-    "AprilTag detected on search leg %zu; holding %.1f cm for %.1f s visual alignment.",
+    "Visual target detected on search leg %zu; holding %.1f cm for %.1f s alignment.",
     current_index_ + 1, target.z_cm, pre_descent_alignment_sec_);
 }
 
@@ -672,7 +672,7 @@ void RouteTargetPublisherNode::updateSearchSegmentState()
     publishVisionFresh(false);
     RCLCPP_INFO(
       get_logger(),
-      "Entered continuous AprilTag search segment at waypoint %zu; old vision data cleared.",
+      "Entered continuous visual search segment at waypoint %zu; old vision data cleared.",
       current_index_ + 1);
   } else if (!should_search && search_segment_active_) {
     search_segment_active_ = false;
